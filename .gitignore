@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv312/
+*.egg
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Env
+.env
+backend/.env
+ai_service/.env
+frontend/.env
+
+# Runtime data (local-only storage, per product requirement: no S3/MinIO for now)
+storage/resumes/*
+storage/recordings/*
+storage/transcripts/*
+storage/*.db
+storage/*.db-journal
+storage/*.db-wal
+storage/*.db-shm
+!storage/resumes/.gitkeep
+!storage/recordings/.gitkeep
+!storage/transcripts/.gitkeep
+
+# Logs
+*.log
+
+# Editors/OS
+.vscode/
+.DS_Store
+Thumbs.db
+client_secret_950602324720-htudps2kvng3uitid2ad4c2o16agabft.apps.googleusercontent.com.json
+readme

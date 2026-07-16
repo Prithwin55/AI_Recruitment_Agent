@@ -1,0 +1,236 @@
+import axios from 'axios'
+
+const TOKEN_KEY = 'recruiter_token'
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY)
+}
+
+export function setToken(token: string | null): void {
+  if (token) localStorage.setItem(TOKEN_KEY, token)
+  else localStorage.removeItem(TOKEN_KEY)
+}
+
+export const api = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? '/api',
+})
+
+api.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      setToken(null)
+      if (!window.location.pathname.startsWith('/login')) {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(error)
+  },
+)
+
+export interface User {
+  id: string
+  email: string
+  must_change_password: boolean
+}
+
+export interface LoginResponse {
+  access_token: string
+  token_type: string
+  must_change_password: boolean
+}
+
+export async function login(email: string, password: string): Promise<LoginResponse> {
+  const { data } = await api.post<LoginResponse>('/auth/login', { email, password })
+  return data
+}
+
+export async function fetchCurrentUser(): Promise<User> {
+  const { data } = await api.get<User>('/auth/me')
+  return data
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<User> {
+  const { data } = await api.post<User>('/auth/change-password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  })
+  return data
+}
+
+// --- Recruitments ---
+
+export interface RecruitmentCounts {
+  total_candidates: number
+  queued: number
+  processing: number
+  scored: number
+  failed: number
+  advanced: number
+  interview_in_progress: number
+  interview_completed: number
+  shortlisted: number
+}
+
+export interface Recruitment {
+  id: string
+  title: string
+  jd_text: string
+  status: string
+  created_at: string
+  counts: RecruitmentCounts
+}
+
+export async function listRecruitments(): Promise<Recruitment[]> {
+  const { data } = await api.get<Recruitment[]>('/recruitments')
+  return data
+}
+
+export async function getRecruitment(id: string): Promise<Recruitment> {
+  const { data } = await api.get<Recruitment>(`/recruitments/${id}`)
+  return data
+}
+
+export async function createRecruitment(title: string, jdText: string): Promise<Recruitment> {
+  const { data } = await api.post<Recruitment>('/recruitments', { title, jd_text: jdText })
+  return data
+}
+
+// --- Candidates ---
+
+export type ProcessingStatus = 'queued' | 'processing' | 'scored' | 'failed'
+export type Phase1Decision = 'pending' | 'advance' | 'hold' | 'reject'
+export type Phase2Status =
+  | 'not_scheduled'
+  | 'scheduled'
+  | 'in_progress'
+  | 'completed'
+  | 'expired'
+  | 'no_show'
+
+export interface Candidate {
+  id: string
+  original_filename: string
+  name: string | null
+  email: string | null
+  phone: string | null
+  processing_status: ProcessingStatus
+  processing_error: string | null
+  phase1_score: number | null
+  phase1_rationale: string | null
+  phase1_strengths: string[] | null
+  phase1_gaps: string[] | null
+  phase1_decision: Phase1Decision
+  phase2_status: Phase2Status
+  created_at: string
+}
+
+export interface RejectedUpload {
+  filename: string
+  reason: string
+}
+
+export interface BulkUploadResult {
+  created: Candidate[]
+  rejected: RejectedUpload[]
+}
+
+export async function listCandidates(recruitmentId: string): Promise<Candidate[]> {
+  const { data } = await api.get<Candidate[]>(`/recruitments/${recruitmentId}/candidates`)
+  return data
+}
+
+export async function bulkUploadResumes(recruitmentId: string, files: File[]): Promise<BulkUploadResult> {
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append('files', file)
+  }
+  const { data } = await api.post<BulkUploadResult>(
+    `/recruitments/${recruitmentId}/candidates/bulk-upload`,
+    formData,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  )
+  return data
+}
+
+export async function updateCandidateDecision(
+  candidateId: string,
+  decision: 'advance' | 'hold' | 'reject',
+): Promise<Candidate> {
+  const { data } = await api.patch<Candidate>(`/candidates/${candidateId}/decision`, { decision })
+  return data
+}
+
+// --- Scheduling ---
+
+export interface ScheduledCandidate {
+  candidate_id: string
+  name: string | null
+  email: string | null
+  calendar_invited: boolean
+}
+
+export interface FailedCandidate {
+  candidate_id: string
+  name: string | null
+  reason: string
+}
+
+export interface ScheduleInterviewsResult {
+  scheduled: ScheduledCandidate[]
+  failed: FailedCandidate[]
+  skipped_no_email: FailedCandidate[]
+}
+
+export async function scheduleInterviews(recruitmentId: string): Promise<ScheduleInterviewsResult> {
+  const { data } = await api.post<ScheduleInterviewsResult>(
+    `/recruitments/${recruitmentId}/schedule-interviews`,
+  )
+  return data
+}
+
+// --- Public interview link (candidate-facing, no auth) ---
+
+export type InterviewLanguageCode = 'en' | 'ar-OM'
+
+export interface PublicInterviewSession {
+  token_status: 'pending' | 'active' | 'completed' | 'expired'
+  language: InterviewLanguageCode
+  role_title: string
+  candidate_first_name: string | null
+  duration_minutes: number
+  expires_at: string
+  started_at: string | null
+}
+
+export async function getPublicInterviewSession(token: string): Promise<PublicInterviewSession> {
+  const { data } = await api.get<PublicInterviewSession>(`/interview/${token}`)
+  return data
+}
+
+export async function setInterviewLanguage(
+  token: string,
+  language: InterviewLanguageCode,
+): Promise<PublicInterviewSession> {
+  const { data } = await api.patch<PublicInterviewSession>(`/interview/${token}/language`, { language })
+  return data
+}
+
+export interface StartInterviewResult {
+  success: boolean
+  reason: string | null
+  started_at: string | null
+}
+
+export async function startInterview(token: string): Promise<StartInterviewResult> {
+  const { data } = await api.post<StartInterviewResult>(`/interview/${token}/start`)
+  return data
+}
