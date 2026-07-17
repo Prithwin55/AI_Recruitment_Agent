@@ -73,6 +73,9 @@ class DeepgramProvider(SpeechProvider):
         self._eleven_client = AsyncElevenLabs(api_key=settings.elevenlabs_api_key)
         self._eleven_voice_id = settings.elevenlabs_voice_id
         self._eleven_model_id = settings.elevenlabs_model_id
+        # Trailing silence before the candidate's turn is finalized — see config. Deepgram's
+        # UtteranceEnd (what we treat as end-of-turn) fires after this much word-gap silence.
+        self._utterance_end_ms = settings.interview_end_of_turn_silence_ms
         # Checked once per audio chunk while streaming a sentence — set by stop_speaking() to
         # abort the in-flight speak() call promptly on a genuine interruption.
         self._stop_requested = False
@@ -89,7 +92,7 @@ class DeepgramProvider(SpeechProvider):
             channels=1,
             interim_results=True,
             endpointing=300,
-            utterance_end_ms=1000,
+            utterance_end_ms=self._utterance_end_ms,
             vad_events=True,
             smart_format=True,
         )

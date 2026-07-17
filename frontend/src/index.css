@@ -121,3 +121,15 @@
     min-height: 100svh;
   }
 }
+
+@layer utilities {
+  /* Scrollable but with no visible scrollbar — used for the live-captions box, which
+     auto-scrolls to the newest line (see Room.tsx). */
+  .no-scrollbar {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* legacy Edge/IE */
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none; /* Chrome, Safari, Edge */
+  }
+}

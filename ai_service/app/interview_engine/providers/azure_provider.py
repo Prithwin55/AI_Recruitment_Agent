@@ -19,9 +19,6 @@ logger = logging.getLogger(__name__)
 _SAMPLE_RATE = 16000
 _DEFAULT_VOICE = "ar-OM-AyshaNeural"
 _LOCALE = "ar-OM"
-# Matched to Deepgram's utterance_end_ms=1000 so English/Arabic candidates aren't cut off
-# at different sensitivities (see plan).
-_SEGMENTATION_SILENCE_TIMEOUT_MS = "1000"
 
 
 class AzureProvider(SpeechProvider):
@@ -36,6 +33,9 @@ class AzureProvider(SpeechProvider):
         self._key = settings.azure_speech_key
         self._region = settings.azure_speech_region
         self._voice = voice
+        # Trailing silence before the candidate's turn is finalized — see config. Matched to
+        # Deepgram's utterance_end_ms so English/Arabic candidates get the same pause tolerance.
+        self._segmentation_silence_ms = str(settings.interview_end_of_turn_silence_ms)
         self._current_turn_id = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._in_utterance = False
@@ -52,7 +52,7 @@ class AzureProvider(SpeechProvider):
         recognition_config = speechsdk.SpeechConfig(subscription=self._key, region=self._region)
         recognition_config.speech_recognition_language = _LOCALE
         recognition_config.set_property(
-            speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs, _SEGMENTATION_SILENCE_TIMEOUT_MS
+            speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs, self._segmentation_silence_ms
         )
 
         stream_format = speechsdk.audio.AudioStreamFormat(

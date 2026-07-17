@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     idle_ws_timeout_seconds: int = 45
     phase1_shortlist_threshold: int = 70
     phase1_max_concurrency: int = 4
+    # How long the candidate must stay silent before their turn is considered finished and the
+    # agent starts responding. Higher = more tolerant of mid-thought pauses (the candidate can
+    # breathe / collect their thoughts without the agent jumping in), at the cost of a slightly
+    # longer beat before the agent replies once they're genuinely done. Applied to both the
+    # Deepgram (English) and Azure (Arabic) recognizers so both languages feel the same.
+    interview_end_of_turn_silence_ms: int = 2000
 
     # --- Networking ---
     frontend_url: str = "http://localhost:5173"

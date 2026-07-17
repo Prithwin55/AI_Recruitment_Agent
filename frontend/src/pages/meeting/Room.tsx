@@ -27,6 +27,7 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
   const mutedRef = useRef(false)
   const hasEndedRef = useRef(false)
   const finishRef = useRef<((reason: string) => void) | null>(null)
+  const transcriptRef = useRef<HTMLDivElement>(null)
 
   const [ready, setReady] = useState(false)
   const [mediaError, setMediaError] = useState<string | null>(null)
@@ -174,6 +175,13 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
+  // Keep the captions pinned to the newest line as it streams in — the scrollbar itself is
+  // hidden (see the no-scrollbar class), so this is the only way the latest text stays visible.
+  useEffect(() => {
+    const el = transcriptRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [transcript])
+
   function toggleMute() {
     const next = !muted
     mutedRef.current = next
@@ -224,7 +232,11 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
                         : 'Listening'}
             </p>
 
-            <div className="w-full max-w-xl space-y-2 overflow-y-auto rounded-lg bg-white/5 p-4 text-sm" style={{ maxHeight: '30vh' }}>
+            <div
+              ref={transcriptRef}
+              className="no-scrollbar w-full max-w-xl space-y-2 overflow-y-auto rounded-lg bg-white/5 p-4 text-sm"
+              style={{ maxHeight: '30vh' }}
+            >
               {transcript.length === 0 && <p className="text-slate-500">Live captions will appear here…</p>}
               {transcript.map((entry, i) => (
                 <p key={i} className={entry.speaker === 'agent' ? 'text-primary-foreground' : 'text-slate-300'}>
