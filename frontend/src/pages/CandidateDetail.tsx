@@ -54,6 +54,7 @@ export default function CandidateDetail() {
   }
 
   const session = candidate.interview_sessions[0]
+  const totalCheatingFlags = candidate.interview_sessions.reduce((n, s) => n + s.cheating_flags.length, 0)
 
   return (
     <div className="flex flex-col gap-6">
@@ -78,6 +79,16 @@ export default function CandidateDetail() {
             <ProcessingStatusBadge status={candidate.processing_status} />
             <Phase1DecisionBadge decision={candidate.phase1_decision} />
             <Phase2StatusBadge status={candidate.phase2_status} />
+            {totalCheatingFlags > 0 && (
+              <Badge
+                variant="outline"
+                className="gap-1 border-warning/50 text-warning"
+                title={`${totalCheatingFlags} integrity flag${totalCheatingFlags > 1 ? 's' : ''} raised during the interview`}
+              >
+                <ShieldAlert className="h-3 w-3" />
+                {totalCheatingFlags} integrity {totalCheatingFlags > 1 ? 'flags' : 'flag'}
+              </Badge>
+            )}
           </div>
         </div>
       </div>

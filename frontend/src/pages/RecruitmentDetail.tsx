@@ -265,6 +265,8 @@ function CandidateRow({
   deciding: boolean
 }) {
   const canDecide = candidate.processing_status === 'scored'
+  const cheatingCount = candidate.interview_cheating_flags?.length ?? 0
+  const hasCheatingFlags = cheatingCount > 0
 
   return (
     <div className="px-6 py-4">
@@ -298,6 +300,16 @@ function CandidateRow({
               {candidate.interview_score !== null && ` · ${Math.round(candidate.interview_score)}`}
             </Badge>
           )}
+          {hasCheatingFlags && (
+            <Badge
+              variant="outline"
+              className="gap-1 border-warning/50 text-warning"
+              title={`${cheatingCount} integrity flag${cheatingCount > 1 ? 's' : ''} raised during the interview`}
+            >
+              <ShieldAlert className="h-3 w-3" />
+              {cheatingCount}
+            </Badge>
+          )}
 
           {canDecide && (
             <div className="flex gap-1">
@@ -313,7 +325,7 @@ function CandidateRow({
             </div>
           )}
 
-          {(candidate.phase1_rationale || candidate.interview_rationale) && (
+          {(candidate.phase1_rationale || candidate.interview_rationale || hasCheatingFlags) && (
             <Button size="icon" variant="ghost" onClick={onToggle}>
               {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </Button>
@@ -321,8 +333,27 @@ function CandidateRow({
         </div>
       </div>
 
-      {expanded && (candidate.phase1_rationale || candidate.interview_rationale) && (
+      {expanded && (candidate.phase1_rationale || candidate.interview_rationale || hasCheatingFlags) && (
         <div className="mt-3 flex flex-col gap-4">
+          {candidate.interview_cheating_flags && candidate.interview_cheating_flags.length > 0 && (
+            <div className="rounded-md border border-warning/30 bg-warning/5 p-4 text-sm">
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-warning">
+                <ShieldAlert className="h-3.5 w-3.5" />
+                Integrity flags ({candidate.interview_cheating_flags.length})
+              </p>
+              <p className="mb-2 text-xs text-muted-foreground">
+                Detected during the interview — informational only, not part of the AI's score or decision.
+              </p>
+              <ul className="space-y-1">
+                {candidate.interview_cheating_flags.map((f, i) => (
+                  <li key={i} className="text-xs text-foreground">
+                    <span className="font-medium">{CHEATING_FLAG_LABELS[f.kind] ?? f.kind}</span>
+                    {f.detail ? <span className="text-muted-foreground"> — {f.detail}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {candidate.interview_rationale && (
             <div className="rounded-md bg-muted/60 p-4 text-sm">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -378,26 +409,6 @@ function CandidateRow({
                 Reason for {candidate.interview_decision === 'shortlist' ? 'shortlisting' : 'rejection'}
               </p>
               <p className="text-foreground">{candidate.interview_rationale}</p>
-
-              {candidate.interview_cheating_flags && candidate.interview_cheating_flags.length > 0 && (
-                <div className="mt-3 rounded-md border border-warning/30 bg-warning/5 p-3">
-                  <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-warning">
-                    <ShieldAlert className="h-3.5 w-3.5" />
-                    Integrity flags ({candidate.interview_cheating_flags.length})
-                  </p>
-                  <p className="mb-2 text-xs text-muted-foreground">
-                    Detected during the interview — informational only, not part of the score.
-                  </p>
-                  <ul className="space-y-1">
-                    {candidate.interview_cheating_flags.map((f, i) => (
-                      <li key={i} className="text-xs text-foreground">
-                        <span className="font-medium">{CHEATING_FLAG_LABELS[f.kind] ?? f.kind}</span>
-                        {f.detail ? <span className="text-muted-foreground"> — {f.detail}</span> : null}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
 
               <Link to={`/candidates/${candidate.id}`} className="mt-3 inline-block text-xs text-primary hover:underline">
                 View full transcript →
