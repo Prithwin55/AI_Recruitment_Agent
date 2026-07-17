@@ -3,6 +3,15 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+class CheatingFlagOut(BaseModel):
+    kind: str
+    detail: str | None
+    at_seconds: float | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class CandidateOut(BaseModel):
     id: str
     original_filename: str
@@ -28,6 +37,9 @@ class CandidateOut(BaseModel):
     interview_weaknesses: list[str] | None = None
     interview_ability_score: float | None = None
     interview_confidence_score: float | None = None
+    # Integrity/proctoring flags raised during the interview — informational only, never part
+    # of scoring. None until an interview has run; an empty list means none were raised.
+    interview_cheating_flags: list[CheatingFlagOut] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -75,6 +87,7 @@ class InterviewSessionOut(BaseModel):
     decision: str | None
     sentiment_summary: dict | None
     transcript_turns: list[TranscriptTurnOut]
+    cheating_flags: list[CheatingFlagOut] = []
 
 
 class CandidateDetailOut(CandidateOut):

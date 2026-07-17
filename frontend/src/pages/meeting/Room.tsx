@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Mic, MicOff, PhoneOff, Sparkles } from 'lucide-react'
+import { Mic, MicOff, PhoneOff, ShieldAlert, Sparkles } from 'lucide-react'
 import { AgentAudioPlayer } from '@/lib/interview/audioPlayback'
+import { CheatingDetector } from '@/lib/interview/cheatingDetection'
 import { InterviewSocket, type ServerMessage } from '@/lib/interview/interviewSocket'
 import { startMicCapture, type MicCapture } from '@/lib/interview/micCapture'
 import { Button } from '@/components/ui/button'
@@ -10,6 +11,29 @@ interface TranscriptEntry {
   speaker: 'agent' | 'candidate'
   text: string
   partial: boolean
+}
+
+interface IntegrityFlag {
+  kind: string
+  detail: string
+  at: string
+}
+
+function flagLabel(kind: string): string {
+  switch (kind) {
+    case 'multiple_faces':
+      return 'Multiple people'
+    case 'no_face':
+      return 'Not visible'
+    case 'looking_away':
+      return 'Looking away'
+    case 'head_turned':
+      return 'Head turned'
+    case 'multiple_voices':
+      return 'Multiple voices'
+    default:
+      return kind
+  }
 }
 
 function formatClock(totalSeconds: number): string {
@@ -28,6 +52,7 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
   const hasEndedRef = useRef(false)
   const finishRef = useRef<((reason: string) => void) | null>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
+  const detectorRef = useRef<CheatingDetector | null>(null)
 
   const [ready, setReady] = useState(false)
   const [mediaError, setMediaError] = useState<string | null>(null)
@@ -39,6 +64,8 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
   // Enabled only once the agent decides the interview is over (server sends interview_concluded).
   // There is no automatic end — the candidate hangs up with the End call button below.
   const [canEndCall, setCanEndCall] = useState(false)
+  // Integrity/proctoring flags raised during the interview — shown live on the right and kept.
+  const [integrityFlags, setIntegrityFlags] = useState<IntegrityFlag[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -72,6 +99,14 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
           }
           return [...prev, { speaker: 'candidate', text, partial: !final }]
         })
+      }
+
+      const joinedAt = performance.now()
+      function addFlag(kind: string, detail: string, atSeconds?: number | null) {
+        const secs = atSeconds != null ? atSeconds : (performance.now() - joinedAt) / 1000
+        setIntegrityFlags((prev) =>
+          prev.length >= 100 ? prev : [...prev, { kind, detail, at: formatClock(secs) }],
+        )
       }
 
       function handleMessage(msg: ServerMessage) {
@@ -113,6 +148,10 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
             setCanEndCall(true)
             setOrbState('idle')
             break
+          case 'cheating_flag':
+            // Server-detected integrity signal (multiple voices) — show it in the panel.
+            addFlag(msg.kind, msg.detail ?? flagLabel(msg.kind), msg.at_seconds)
+            break
           case 'interview_ended':
             finish(msg.reason)
             break
@@ -153,9 +192,23 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
         return
       }
       micRef.current = mic
+
+      // Client-side video proctoring. Runs entirely locally; on any failure it self-disables
+      // and the interview is unaffected. Each detected event is both shown live and sent to the
+      // server for the recruiter review.
+      if (videoRef.current) {
+        const detector = new CheatingDetector(videoRef.current, ({ kind, detail }) => {
+          addFlag(kind, detail)
+          socket.sendCheatingEvent(kind, detail)
+        })
+        detectorRef.current = detector
+        void detector.start()
+      }
     }
 
     function cleanup() {
+      detectorRef.current?.stop()
+      detectorRef.current = null
       micRef.current?.stop()
       micRef.current = null
       playerRef.current?.close()
@@ -208,7 +261,29 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
         </div>
       </header>
 
-      <main className="flex flex-1 flex-col items-center justify-center gap-8 px-4 py-8">
+      <main className="relative flex flex-1 flex-col items-center justify-center gap-8 px-4 py-8">
+        {integrityFlags.length > 0 && (
+          <div className="absolute right-4 top-4 z-10 w-64 max-w-[70vw]">
+            <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 shadow-lg backdrop-blur">
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-warning">
+                <ShieldAlert className="h-4 w-4" />
+                Integrity alerts ({integrityFlags.length})
+              </div>
+              <ul className="no-scrollbar max-h-[55vh] space-y-1.5 overflow-y-auto">
+                {integrityFlags.map((f, i) => (
+                  <li key={i} className="rounded-md bg-black/30 px-2.5 py-1.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-warning">{flagLabel(f.kind)}</span>
+                      <span className="tabular-nums text-slate-400">{f.at}</span>
+                    </div>
+                    <p className="mt-0.5 text-slate-300">{f.detail}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
         {mediaError ? (
           <p className="max-w-sm text-center text-sm text-destructive">{mediaError}</p>
         ) : (

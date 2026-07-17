@@ -17,6 +17,12 @@ class InterimTranscriptEvent:
 class FinalTranscriptEvent:
     text: str
     speech_final: bool  # provider is confident the candidate's turn has ended
+    # Diarization info for the "multiple voices" integrity check (Deepgram only; empty for
+    # Azure). speakers = distinct speaker ids heard in this segment; dominant_speaker = the one
+    # with the most words. The turn-taking engine, which knows whether the agent is speaking,
+    # decides what counts as a genuine second voice — see _check_multiple_voices.
+    speakers: frozenset = frozenset()
+    dominant_speaker: int | None = None
 
 
 @dataclass

@@ -1,0 +1,4 @@
+ui updates
+our speech to text
+opensource text to speech
+our turn taking vad implementation

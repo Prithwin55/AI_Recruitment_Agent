@@ -139,6 +139,22 @@ export interface Candidate {
   interview_weaknesses: string[] | null
   interview_ability_score: number | null
   interview_confidence_score: number | null
+  interview_cheating_flags: CheatingFlag[] | null
+}
+
+export interface CheatingFlag {
+  kind: string
+  detail: string | null
+  at_seconds: number | null
+  created_at: string
+}
+
+export const CHEATING_FLAG_LABELS: Record<string, string> = {
+  multiple_faces: 'Multiple people on camera',
+  no_face: 'Candidate not visible',
+  looking_away: 'Looking away from screen',
+  head_turned: 'Head turned away',
+  multiple_voices: 'Multiple voices detected',
 }
 
 export interface RejectedUpload {
@@ -279,6 +295,7 @@ export interface InterviewSessionDetail {
   decision: 'shortlist' | 'reject' | null
   sentiment_summary: SentimentSummary | null
   transcript_turns: TranscriptTurn[]
+  cheating_flags: CheatingFlag[]
 }
 
 export interface ParsedProfile {

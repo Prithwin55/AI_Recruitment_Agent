@@ -9,6 +9,8 @@ from shared.config import get_settings
 from shared.db import session_scope
 from shared.models import (
     Candidate,
+    CheatingFlag,
+    CheatingKind,
     InterviewResult,
     InterviewSession,
     Phase2Status,
@@ -32,6 +34,13 @@ _TIMER_UPDATE_INTERVAL_S = 5
 _TIME_UP_NOTE = "[The allotted interview time has now ended.]"
 _FALLBACK_GOODBYE = "That's all the time we have for today — thank you so much for interviewing with us."
 _RETRY_NUDGE = "Sorry, I had a brief hiccup there — could you say that again?"
+
+# Safety cap so a buggy/hostile client can't flood the DB with integrity flags. Real sessions
+# produce a handful; the client already debounces sustained conditions into single events.
+_MAX_CHEATING_FLAGS = 200
+# Minimum gap between two logged multiple-voices flags — Deepgram can report a second speaker
+# on several consecutive finals for one real occurrence; we only want to log it once.
+_VOICE_FLAG_DEBOUNCE_S = 15.0
 
 
 class InterviewOrchestrator:
@@ -79,11 +88,14 @@ class InterviewOrchestrator:
                 on_candidate_speaking_start=self._on_candidate_speaking_start,
                 on_candidate_partial=self._on_candidate_partial,
                 on_candidate_final=self._on_candidate_final,
+                on_multiple_voices=self._on_multiple_voices,
             ),
         )
 
         self._responding_lock = asyncio.Lock()
         self._background_tasks: list[asyncio.Task] = []
+        self._cheating_flag_count = 0
+        self._last_voice_flag_at = -_VOICE_FLAG_DEBOUNCE_S
 
     async def _send_json(self, payload: dict) -> None:
         try:
@@ -237,6 +249,50 @@ class InterviewOrchestrator:
 
     def set_muted(self, muted: bool) -> None:
         self.engine.set_muted(muted)
+
+    async def record_cheating_flag(self, kind: str, detail: str | None = None, notify_client: bool = False) -> None:
+        """Persist one integrity/proctoring flag. Called both for client-reported video events
+        (multiple faces, looking away, head turned) and server-detected audio events (multiple
+        voices). Purely informational — never touches interview scoring."""
+        try:
+            kind_enum = CheatingKind(kind)
+        except ValueError:
+            logger.warning("Ignoring unknown cheating flag kind %r for session %s", kind, self.session_id)
+            return
+        if self._cheating_flag_count >= _MAX_CHEATING_FLAGS:
+            return
+        self._cheating_flag_count += 1
+        at_seconds = round(time.monotonic() - self.started_at, 1)
+        detail = (detail or "")[:500] or None
+        try:
+            with session_scope() as db:
+                db.add(
+                    CheatingFlag(
+                        interview_session_id=self.session_id,
+                        kind=kind_enum,
+                        detail=detail,
+                        at_seconds=at_seconds,
+                    )
+                )
+        except Exception:  # noqa: BLE001 — a proctoring log write must never break the interview
+            logger.exception("Failed to record cheating flag for session %s", self.session_id)
+            return
+        if notify_client:
+            await self._send_json(
+                {"type": "cheating_flag", "kind": kind_enum.value, "detail": detail, "at_seconds": at_seconds}
+            )
+
+    async def _on_multiple_voices(self) -> None:
+        # Debounced: one real "second person spoke" occurrence can span several Deepgram finals.
+        now = time.monotonic()
+        if now - self._last_voice_flag_at < _VOICE_FLAG_DEBOUNCE_S:
+            return
+        self._last_voice_flag_at = now
+        await self.record_cheating_flag(
+            CheatingKind.MULTIPLE_VOICES.value,
+            detail="A second voice was detected on the microphone",
+            notify_client=True,
+        )
 
     async def _timer_loop(self) -> None:
         while not self.ended:
@@ -392,6 +448,12 @@ async def interview_websocket(websocket: WebSocket, token: str) -> None:
                     orchestrator.set_muted(True)
                 elif data.get("type") == "mic_unmuted":
                     orchestrator.set_muted(False)
+                elif data.get("type") == "cheating_event":
+                    # Client-side proctoring (MediaPipe) reported a video-based integrity event.
+                    # It already displays it locally; we just persist it for the recruiter review.
+                    await orchestrator.record_cheating_flag(
+                        str(data.get("kind", "")), detail=data.get("detail")
+                    )
                 elif data.get("type") == "end_call":
                     # Candidate clicked "End call" (only possible once the agent concluded and
                     # enabled the button). Finalize and break out of the receive loop.

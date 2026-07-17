@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse
 from shared.db import session_scope
 from shared.models import (
     Candidate,
+    CheatingFlag,
     InterviewResult,
     InterviewSession,
     Phase1Decision,
@@ -20,6 +21,7 @@ from .schemas import (
     BulkUploadResult,
     CandidateDetailOut,
     CandidateOut,
+    CheatingFlagOut,
     DecisionUpdate,
     InterviewSessionOut,
     RejectedUpload,
@@ -112,6 +114,7 @@ def list_candidates(
         )
 
         results_by_candidate: dict[str, InterviewResult] = {}
+        flags_by_candidate: dict[str, list[CheatingFlag]] = {}
         candidate_ids = [c.id for c in candidates]
         if candidate_ids:
             rows = (
@@ -122,6 +125,16 @@ def list_candidates(
             )
             for candidate_id, result in rows:
                 results_by_candidate[candidate_id] = result
+
+            flag_rows = (
+                db.query(InterviewSession.candidate_id, CheatingFlag)
+                .join(CheatingFlag, CheatingFlag.interview_session_id == InterviewSession.id)
+                .filter(InterviewSession.candidate_id.in_(candidate_ids))
+                .order_by(CheatingFlag.created_at.asc())
+                .all()
+            )
+            for candidate_id, flag in flag_rows:
+                flags_by_candidate.setdefault(candidate_id, []).append(flag)
 
         out = []
         for c in candidates:
@@ -136,6 +149,10 @@ def list_candidates(
                 item.interview_weaknesses = result.weaknesses
                 item.interview_ability_score = result.ability_score
                 item.interview_confidence_score = result.confidence_score
+            if c.id in flags_by_candidate:
+                item.interview_cheating_flags = [
+                    CheatingFlagOut.model_validate(f) for f in flags_by_candidate[c.id]
+                ]
             out.append(item)
         return out
 
@@ -174,6 +191,18 @@ def get_candidate(
             .all()
         )
 
+        session_ids = [s.id for s in sessions]
+        flags_by_session: dict[str, list[CheatingFlag]] = {}
+        if session_ids:
+            flag_rows = (
+                db.query(CheatingFlag)
+                .filter(CheatingFlag.interview_session_id.in_(session_ids))
+                .order_by(CheatingFlag.created_at.asc())
+                .all()
+            )
+            for flag in flag_rows:
+                flags_by_session.setdefault(flag.interview_session_id, []).append(flag)
+
         session_rows = []
         for s in sessions:
             turns = sorted(s.transcript_turns, key=lambda t: t.sequence_index)
@@ -196,6 +225,7 @@ def get_candidate(
                     decision=s.result.decision.value if s.result and s.result.decision else None,
                     sentiment_summary=s.result.sentiment_summary if s.result else None,
                     transcript_turns=[TranscriptTurnOut.model_validate(t) for t in turns],
+                    cheating_flags=[CheatingFlagOut.model_validate(f) for f in flags_by_session.get(s.id, [])],
                 )
             )
 

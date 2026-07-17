@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Download, FileWarning } from 'lucide-react'
-import { fetchResumeBlob, getCandidate } from '@/lib/api'
+import { ArrowLeft, Download, FileWarning, ShieldAlert } from 'lucide-react'
+import { CHEATING_FLAG_LABELS, fetchResumeBlob, getCandidate } from '@/lib/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { buttonVariants } from '@/components/ui/button'
@@ -253,6 +253,36 @@ export default function CandidateDetail() {
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">Scoring hasn't finished yet — check back shortly.</p>
+              )}
+
+              {session.cheating_flags.length > 0 && (
+                <div>
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-warning">
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                    Integrity flags ({session.cheating_flags.length})
+                  </p>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Raised during the interview. Informational only — these do not affect the AI's score or decision.
+                  </p>
+                  <ul className="space-y-1.5">
+                    {session.cheating_flags.map((f, i) => (
+                      <li
+                        key={i}
+                        className="flex items-start justify-between gap-3 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-sm"
+                      >
+                        <div>
+                          <span className="font-medium text-foreground">{CHEATING_FLAG_LABELS[f.kind] ?? f.kind}</span>
+                          {f.detail && <p className="text-xs text-muted-foreground">{f.detail}</p>}
+                        </div>
+                        {f.at_seconds != null && (
+                          <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+                            {Math.floor(f.at_seconds / 60)}:{String(Math.floor(f.at_seconds % 60)).padStart(2, '0')}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
 
               {session.transcript_turns.length > 0 && (

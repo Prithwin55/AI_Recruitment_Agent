@@ -74,6 +74,18 @@ class FinalDecision(str, enum.Enum):
     REJECT = "reject"
 
 
+class CheatingKind(str, enum.Enum):
+    """Integrity/proctoring signals raised during a live interview. These are informational
+    only — they are logged and surfaced to the recruiter but deliberately never fed into the
+    interview scoring (see post_interview/analyzer.py)."""
+
+    MULTIPLE_FACES = "multiple_faces"  # more than one person visible on camera
+    NO_FACE = "no_face"  # candidate not visible / left the frame
+    LOOKING_AWAY = "looking_away"  # gaze consistently off-screen (reading elsewhere)
+    HEAD_TURNED = "head_turned"  # head turned away from the screen
+    MULTIPLE_VOICES = "multiple_voices"  # a second speaker heard on the mic
+
+
 def _str_enum(python_enum, **kw):
     return Enum(python_enum, native_enum=False, validate_strings=True, **kw)
 
@@ -229,3 +241,23 @@ class InterviewResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     session: Mapped["InterviewSession"] = relationship(back_populates="result")
+
+
+class CheatingFlag(Base):
+    """One integrity event raised during an interview. Multiple flags per session are expected
+    (each distinct occurrence is its own row); the recruiter review lists them all."""
+
+    __tablename__ = "cheating_flags"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    interview_session_id: Mapped[str] = mapped_column(
+        ForeignKey("interview_sessions.id"), index=True
+    )
+    kind: Mapped[CheatingKind] = mapped_column(_str_enum(CheatingKind))
+    detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Seconds since the interview started, so the review can show "at 4:12" without needing
+    # wall-clock reconciliation across the two services.
+    at_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    session: Mapped["InterviewSession"] = relationship()

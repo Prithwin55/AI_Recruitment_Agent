@@ -11,6 +11,8 @@ export type ServerMessage =
   // The agent decided the interview is over and finished its goodbye — the client should now
   // enable its "End call" button. The session is NOT torn down; the candidate hangs up.
   | { type: 'interview_concluded' }
+  // A server-detected integrity flag (currently only "multiple voices" from the audio stream).
+  | { type: 'cheating_flag'; kind: string; detail: string | null; at_seconds: number | null }
   | { type: 'interview_ended'; reason: string }
   | { type: 'error'; message: string }
 
@@ -62,6 +64,13 @@ export class InterviewSocket {
     // rather than the server only finding out via an abrupt socket drop.
     if (this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'end_call' }))
+    }
+  }
+
+  sendCheatingEvent(kind: string, detail: string): void {
+    // Client-side (video) proctoring event, for the server to persist to the recruiter review.
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'cheating_event', kind, detail }))
     }
   }
 

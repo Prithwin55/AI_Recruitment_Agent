@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections import Counter
 
 from deepgram import AsyncDeepgramClient
 from deepgram.core.events import EventType
@@ -95,6 +96,9 @@ class DeepgramProvider(SpeechProvider):
             utterance_end_ms=self._utterance_end_ms,
             vad_events=True,
             smart_format=True,
+            # Speaker labels per word — used only for the "multiple voices" integrity signal
+            # (see _on_listen_message). Does not affect transcription/turn-taking.
+            diarize=True,
         )
         self._listen_conn = await self._listen_cm.__aenter__()
         self._listen_conn.on(EventType.MESSAGE, self._on_listen_message)
@@ -108,7 +112,21 @@ class DeepgramProvider(SpeechProvider):
             if not text:
                 return
             if message.is_final:
-                await self.events.put(FinalTranscriptEvent(text=text, speech_final=bool(message.speech_final)))
+                # Attach diarization info for the "multiple voices" integrity check. The
+                # turn-taking engine (which knows if the agent is speaking) decides what counts
+                # as a genuine second voice — here we just report who Deepgram heard.
+                speaker_counts = Counter(
+                    w.speaker for w in (alt.words or []) if w.speaker is not None
+                )
+                dominant = speaker_counts.most_common(1)[0][0] if speaker_counts else None
+                await self.events.put(
+                    FinalTranscriptEvent(
+                        text=text,
+                        speech_final=bool(message.speech_final),
+                        speakers=frozenset(speaker_counts),
+                        dominant_speaker=dominant,
+                    )
+                )
             else:
                 await self.events.put(InterimTranscriptEvent(text=text))
         elif isinstance(message, ListenV1SpeechStarted):

@@ -52,6 +52,7 @@ class TurnTakingCallbacks:
     on_candidate_speaking_start: Callable[[], Awaitable[None]] | None = None
     on_candidate_partial: Callable[[str], Awaitable[None]] | None = None
     on_candidate_final: Callable[[str], Awaitable[None]] | None = None
+    on_multiple_voices: Callable[[], Awaitable[None]] | None = None
 
 
 @dataclass
@@ -80,6 +81,11 @@ class TurnTakingEngine:
 
         self._sentence_flushed_events: dict[int, asyncio.Event] = {}
         self._pump_task: asyncio.Task | None = None
+
+        # The diarization speaker id established as "the candidate" — set from the first real
+        # candidate-turn final. Any later candidate-turn final dominated by a different speaker
+        # (or containing 2+ speakers at once) means a second voice — see _check_multiple_voices.
+        self._primary_speaker: int | None = None
 
     async def start(self) -> None:
         await self._provider.start()
@@ -152,6 +158,25 @@ class TurnTakingEngine:
         if self._cb.on_agent_interrupted:
             await self._cb.on_agent_interrupted()
 
+    async def _check_multiple_voices(self, event: FinalTranscriptEvent) -> None:
+        """Integrity check on a candidate-turn final (only reached when the agent is NOT
+        speaking). Two signals: (1) a single final containing 2+ speakers = people talking over
+        each other; (2) a final dominated by a speaker other than the established candidate =
+        a different person took a turn. Best-effort — diarization on one far-field mic isn't
+        perfect — so the orchestrator debounces and the recruiter reviews, rather than any
+        automatic action. Only providers that diarize populate event.speakers (Deepgram); Azure
+        leaves it empty, making this a no-op for Arabic."""
+        if not event.speakers:
+            return
+        second_voice = len(event.speakers) >= 2
+        if self._primary_speaker is None:
+            # First real candidate-turn final establishes who "the candidate" is.
+            self._primary_speaker = event.dominant_speaker
+        elif event.dominant_speaker is not None and event.dominant_speaker != self._primary_speaker:
+            second_voice = True
+        if second_voice and self._cb.on_multiple_voices:
+            await self._cb.on_multiple_voices()
+
     async def _pump_events(self) -> None:
         while True:
             event = await self._provider.events.get()
@@ -197,9 +222,14 @@ class TurnTakingEngine:
 
             if isinstance(event, FinalTranscriptEvent):
                 # A brief noise blip that never crossed the interruption threshold and never
-                # produced real transcript growth — nothing to do, stay AGENT_SPEAKING.
+                # produced real transcript growth — nothing to do, stay AGENT_SPEAKING. Crucially
+                # we also DON'T run the multiple-voices check while the agent speaks: a "second
+                # speaker" in the mic then is almost always the agent's own echo, and skipping it
+                # here is also what keeps the agent's voice from ever being taken as the primary
+                # speaker (only real candidate-turn finals establish the baseline).
                 if self.state == TurnState.AGENT_SPEAKING:
                     continue
+                await self._check_multiple_voices(event)
                 if event.text:
                     self._candidate_final_segments.append(event.text)
                 continue

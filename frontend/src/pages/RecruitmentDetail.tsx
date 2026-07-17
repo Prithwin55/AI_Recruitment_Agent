@@ -1,9 +1,10 @@
 import { useRef, useState, type DragEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarClock, ChevronDown, ChevronUp, UploadCloud } from 'lucide-react'
+import { CalendarClock, ChevronDown, ChevronUp, ShieldAlert, UploadCloud } from 'lucide-react'
 import {
   bulkUploadResumes,
+  CHEATING_FLAG_LABELS,
   getRecruitment,
   listCandidates,
   scheduleInterviews,
@@ -377,6 +378,26 @@ function CandidateRow({
                 Reason for {candidate.interview_decision === 'shortlist' ? 'shortlisting' : 'rejection'}
               </p>
               <p className="text-foreground">{candidate.interview_rationale}</p>
+
+              {candidate.interview_cheating_flags && candidate.interview_cheating_flags.length > 0 && (
+                <div className="mt-3 rounded-md border border-warning/30 bg-warning/5 p-3">
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-warning">
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                    Integrity flags ({candidate.interview_cheating_flags.length})
+                  </p>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Detected during the interview — informational only, not part of the score.
+                  </p>
+                  <ul className="space-y-1">
+                    {candidate.interview_cheating_flags.map((f, i) => (
+                      <li key={i} className="text-xs text-foreground">
+                        <span className="font-medium">{CHEATING_FLAG_LABELS[f.kind] ?? f.kind}</span>
+                        {f.detail ? <span className="text-muted-foreground"> — {f.detail}</span> : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               <Link to={`/candidates/${candidate.id}`} className="mt-3 inline-block text-xs text-primary hover:underline">
                 View full transcript →
