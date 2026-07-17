@@ -37,6 +37,11 @@ class SentimentSummary(BaseModel):
 class FinalInterviewScore(BaseModel):
     """Structured output of the post-interview Claude scoring call."""
 
+    summary: str
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    ability_score: int = Field(ge=0, le=100)
+    confidence_score: int = Field(ge=0, le=100)
     score: int = Field(ge=0, le=100)
     rationale: str
     decision: str  # "shortlist" | "reject"

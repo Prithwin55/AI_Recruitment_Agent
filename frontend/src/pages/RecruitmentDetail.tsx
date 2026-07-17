@@ -1,5 +1,5 @@
 import { useRef, useState, type DragEvent } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CalendarClock, ChevronDown, ChevronUp, UploadCloud } from 'lucide-react'
 import {
@@ -10,6 +10,7 @@ import {
   updateCandidateDecision,
   type Candidate,
 } from '@/lib/api'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
@@ -269,9 +270,9 @@ function CandidateRow({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate font-medium text-foreground">
+            <Link to={`/candidates/${candidate.id}`} className="truncate font-medium text-foreground hover:text-primary hover:underline">
               {candidate.name ?? candidate.original_filename}
-            </p>
+            </Link>
             {candidate.phase1_score !== null && (
               <span className="tabular-nums text-sm font-semibold text-primary">
                 {Math.round(candidate.phase1_score)}
@@ -290,6 +291,12 @@ function CandidateRow({
           <ProcessingStatusBadge status={candidate.processing_status} />
           <Phase1DecisionBadge decision={candidate.phase1_decision} />
           <Phase2StatusBadge status={candidate.phase2_status} />
+          {candidate.interview_decision && (
+            <Badge variant={candidate.interview_decision === 'shortlist' ? 'success' : 'destructive'}>
+              {candidate.interview_decision === 'shortlist' ? 'Shortlisted' : 'Rejected'}
+              {candidate.interview_score !== null && ` · ${Math.round(candidate.interview_score)}`}
+            </Badge>
+          )}
 
           {canDecide && (
             <div className="flex gap-1">
@@ -305,7 +312,7 @@ function CandidateRow({
             </div>
           )}
 
-          {candidate.phase1_rationale && (
+          {(candidate.phase1_rationale || candidate.interview_rationale) && (
             <Button size="icon" variant="ghost" onClick={onToggle}>
               {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </Button>
@@ -313,27 +320,93 @@ function CandidateRow({
         </div>
       </div>
 
-      {expanded && candidate.phase1_rationale && (
-        <div className="mt-3 rounded-md bg-muted/60 p-4 text-sm">
-          <p className="text-foreground">{candidate.phase1_rationale}</p>
-          {candidate.phase1_strengths && candidate.phase1_strengths.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-success">Strengths</p>
-              <ul className="mt-1 list-inside list-disc text-muted-foreground">
-                {candidate.phase1_strengths.map((s, i) => (
-                  <li key={i}>{s}</li>
-                ))}
-              </ul>
+      {expanded && (candidate.phase1_rationale || candidate.interview_rationale) && (
+        <div className="mt-3 flex flex-col gap-4">
+          {candidate.interview_rationale && (
+            <div className="rounded-md bg-muted/60 p-4 text-sm">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Interview review</p>
+                <Badge variant={candidate.interview_decision === 'shortlist' ? 'success' : 'destructive'}>
+                  {candidate.interview_decision === 'shortlist' ? 'Shortlisted' : 'Rejected'}
+                </Badge>
+              </div>
+
+              {(candidate.interview_ability_score !== null || candidate.interview_confidence_score !== null) && (
+                <div className="mb-3 flex gap-4">
+                  {candidate.interview_ability_score !== null && (
+                    <span className="text-xs text-muted-foreground">
+                      Ability: <span className="font-semibold text-foreground">{Math.round(candidate.interview_ability_score)}</span>
+                    </span>
+                  )}
+                  {candidate.interview_confidence_score !== null && (
+                    <span className="text-xs text-muted-foreground">
+                      Confidence: <span className="font-semibold text-foreground">{Math.round(candidate.interview_confidence_score)}</span>
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {candidate.interview_summary && <p className="mb-3 text-foreground">{candidate.interview_summary}</p>}
+
+              {(candidate.interview_strengths?.length || candidate.interview_weaknesses?.length) && (
+                <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {candidate.interview_strengths && candidate.interview_strengths.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-success">Strengths</p>
+                      <ul className="mt-1 list-inside list-disc text-muted-foreground">
+                        {candidate.interview_strengths.map((s, i) => (
+                          <li key={i}>{s}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {candidate.interview_weaknesses && candidate.interview_weaknesses.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-warning-foreground">Weaknesses</p>
+                      <ul className="mt-1 list-inside list-disc text-muted-foreground">
+                        {candidate.interview_weaknesses.map((w, i) => (
+                          <li key={i}>{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Reason for {candidate.interview_decision === 'shortlist' ? 'shortlisting' : 'rejection'}
+              </p>
+              <p className="text-foreground">{candidate.interview_rationale}</p>
+
+              <Link to={`/candidates/${candidate.id}`} className="mt-3 inline-block text-xs text-primary hover:underline">
+                View full transcript →
+              </Link>
             </div>
           )}
-          {candidate.phase1_gaps && candidate.phase1_gaps.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-warning-foreground">Gaps</p>
-              <ul className="mt-1 list-inside list-disc text-muted-foreground">
-                {candidate.phase1_gaps.map((g, i) => (
-                  <li key={i}>{g}</li>
-                ))}
-              </ul>
+          {candidate.phase1_rationale && (
+            <div className="rounded-md bg-muted/60 p-4 text-sm">
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Resume screening</p>
+              <p className="text-foreground">{candidate.phase1_rationale}</p>
+              {candidate.phase1_strengths && candidate.phase1_strengths.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-success">Strengths</p>
+                  <ul className="mt-1 list-inside list-disc text-muted-foreground">
+                    {candidate.phase1_strengths.map((s, i) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {candidate.phase1_gaps && candidate.phase1_gaps.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-warning-foreground">Gaps</p>
+                  <ul className="mt-1 list-inside list-disc text-muted-foreground">
+                    {candidate.phase1_gaps.map((g, i) => (
+                      <li key={i}>{g}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>

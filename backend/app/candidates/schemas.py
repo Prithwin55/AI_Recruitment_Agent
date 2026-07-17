@@ -19,6 +19,16 @@ class CandidateOut(BaseModel):
     phase2_status: str
     created_at: datetime
 
+    # Final interview outcome, populated once Phase 2 scoring completes — None until then.
+    interview_score: float | None = None
+    interview_decision: str | None = None
+    interview_rationale: str | None = None
+    interview_summary: str | None = None
+    interview_strengths: list[str] | None = None
+    interview_weaknesses: list[str] | None = None
+    interview_ability_score: float | None = None
+    interview_confidence_score: float | None = None
+
     model_config = {"from_attributes": True}
 
 
@@ -34,3 +44,40 @@ class BulkUploadResult(BaseModel):
 
 class DecisionUpdate(BaseModel):
     decision: str = Field(pattern="^(advance|hold|reject)$")
+
+
+class TranscriptTurnOut(BaseModel):
+    speaker: str
+    text: str
+    cut_off: bool
+    sentiment_label: str | None
+    sentiment_score: float | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class InterviewSessionOut(BaseModel):
+    id: str
+    language: str
+    token_status: str
+    scheduled_start: datetime | None
+    started_at: datetime | None
+    ended_at: datetime | None
+    duration_minutes: int
+    summary: str | None
+    strengths: list[str] | None
+    weaknesses: list[str] | None
+    ability_score: float | None
+    confidence_score: float | None
+    final_score: float | None
+    rationale: str | None
+    decision: str | None
+    sentiment_summary: dict | None
+    transcript_turns: list[TranscriptTurnOut]
+
+
+class CandidateDetailOut(CandidateOut):
+    recruitment_id: str
+    parsed_profile: dict | None
+    interview_sessions: list[InterviewSessionOut]

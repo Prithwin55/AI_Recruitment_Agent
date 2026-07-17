@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
+import MeetingRoom from './Room'
 
 type ViewState =
   | { kind: 'loading' }
@@ -19,7 +20,8 @@ type ViewState =
   | { kind: 'already_active' }
   | { kind: 'completed' }
   | { kind: 'prejoin'; session: PublicInterviewSession }
-  | { kind: 'started'; session: PublicInterviewSession }
+  | { kind: 'started' }
+  | { kind: 'ended'; reason: string }
 
 const LANGUAGES: { code: InterviewLanguageCode; label: string }[] = [
   { code: 'en', label: 'English' },
@@ -109,14 +111,21 @@ export default function PreJoin() {
         return
       }
       if (view.kind === 'prejoin') {
+        // MeetingRoom acquires its own fresh camera/mic stream on mount (permission is already
+        // granted, so this doesn't re-prompt) — simpler and less fragile than handing off this
+        // preview stream's ownership across components.
         streamRef.current?.getTracks().forEach((t) => t.stop())
-        setView({ kind: 'started', session: view.session })
+        setView({ kind: 'started' })
       }
     } catch {
       setJoinError('Could not start the interview. Please try again.')
     } finally {
       setJoining(false)
     }
+  }
+
+  if (view.kind === 'started' && token) {
+    return <MeetingRoom token={token} onEnded={(reason) => setView({ kind: 'ended', reason })} />
   }
 
   return (
@@ -204,11 +213,22 @@ function MeetingContent({
   }
 
   if (view.kind === 'started') {
+    // Unreachable in practice — the top-level PreJoin component renders <MeetingRoom> directly
+    // for this state before MeetingContent is ever invoked. Handled here only so the
+    // exhaustiveness of the ViewState union type-checks.
+    return null
+  }
+
+  if (view.kind === 'ended') {
     return (
       <StatusCard
         icon={<Sparkles className="h-8 w-8 text-success" />}
-        title="You're connected"
-        description="The full AI interview experience is coming very soon. Thanks for your patience — hang tight."
+        title="Interview complete"
+        description={
+          view.reason === 'time_up'
+            ? "Thanks for your time — we've covered everything for today. The recruiter will follow up with next steps."
+            : 'Thanks for taking the time to interview — the recruiter will be in touch with next steps.'
+        }
       />
     )
   }

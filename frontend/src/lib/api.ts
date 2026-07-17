@@ -131,6 +131,14 @@ export interface Candidate {
   phase1_decision: Phase1Decision
   phase2_status: Phase2Status
   created_at: string
+  interview_score: number | null
+  interview_decision: 'shortlist' | 'reject' | null
+  interview_rationale: string | null
+  interview_summary: string | null
+  interview_strengths: string[] | null
+  interview_weaknesses: string[] | null
+  interview_ability_score: number | null
+  interview_confidence_score: number | null
 }
 
 export interface RejectedUpload {
@@ -232,5 +240,66 @@ export interface StartInterviewResult {
 
 export async function startInterview(token: string): Promise<StartInterviewResult> {
   const { data } = await api.post<StartInterviewResult>(`/interview/${token}/start`)
+  return data
+}
+
+// --- Candidate detail (phase 1 + phase 2 results) ---
+
+export interface TranscriptTurn {
+  speaker: 'agent' | 'candidate'
+  text: string
+  cut_off: boolean
+  sentiment_label: string | null
+  sentiment_score: number | null
+  created_at: string
+}
+
+export interface SentimentSummary {
+  average_score: number
+  positive_count: number
+  neutral_count: number
+  negative_count: number
+}
+
+export interface InterviewSessionDetail {
+  id: string
+  language: InterviewLanguageCode
+  token_status: 'pending' | 'active' | 'completed' | 'expired'
+  scheduled_start: string | null
+  started_at: string | null
+  ended_at: string | null
+  duration_minutes: number
+  summary: string | null
+  strengths: string[] | null
+  weaknesses: string[] | null
+  ability_score: number | null
+  confidence_score: number | null
+  final_score: number | null
+  rationale: string | null
+  decision: 'shortlist' | 'reject' | null
+  sentiment_summary: SentimentSummary | null
+  transcript_turns: TranscriptTurn[]
+}
+
+export interface ParsedProfile {
+  summary?: string
+  skills?: string[]
+  years_experience?: number
+  education?: string[]
+}
+
+export interface CandidateDetail extends Candidate {
+  recruitment_id: string
+  parsed_profile: ParsedProfile | null
+  interview_sessions: InterviewSessionDetail[]
+}
+
+export async function getCandidate(candidateId: string): Promise<CandidateDetail> {
+  const { data } = await api.get<CandidateDetail>(`/candidates/${candidateId}`)
+  return data
+}
+
+export async function fetchResumeBlob(candidateId: string): Promise<Blob> {
+  const { data } = await api.get<Blob>(`/candidates/${candidateId}/resume`, { responseType: 'blob' })
   return data
 }

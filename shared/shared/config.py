@@ -17,8 +17,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
 
-    # --- Deepgram (English STT/TTS) ---
+    # --- Deepgram (English STT) ---
     deepgram_api_key: str = ""
+
+    # --- ElevenLabs (English TTS) ---
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""
+    elevenlabs_model_id: str = "eleven_flash_v2_5"
 
     # --- Azure Speech (Arabic-Omani STT/TTS) ---
     azure_speech_key: str = ""

@@ -216,6 +216,11 @@ class InterviewResult(Base):
     )
 
     transcript_file_path: Mapped[str] = mapped_column(String(1000))
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    strengths: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    weaknesses: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    ability_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     sentiment_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)

@@ -8,6 +8,7 @@ import Dashboard from '@/pages/Dashboard'
 import Recruitments from '@/pages/Recruitments'
 import NewRecruitment from '@/pages/NewRecruitment'
 import RecruitmentDetail from '@/pages/RecruitmentDetail'
+import CandidateDetail from '@/pages/CandidateDetail'
 import PreJoin from '@/pages/meeting/PreJoin'
 
 export default function App() {
@@ -24,6 +25,7 @@ export default function App() {
               <Route path="/recruitments" element={<Recruitments />} />
               <Route path="/recruitments/new" element={<NewRecruitment />} />
               <Route path="/recruitments/:id" element={<RecruitmentDetail />} />
+              <Route path="/candidates/:id" element={<CandidateDetail />} />
             </Route>
           </Route>
         </Routes>

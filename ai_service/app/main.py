@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from shared.config import get_settings
 from shared.db import init_db
 
+from .interview_engine.interview_ws import router as interview_ws_router
 from .resume_queue import run_forever as run_resume_queue_forever
 
 logging.basicConfig(level=logging.INFO)
@@ -41,3 +42,6 @@ async def on_shutdown() -> None:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+app.include_router(interview_ws_router)

@@ -63,7 +63,33 @@ def session_scope():
         session.close()
 
 
+def _run_lightweight_migrations() -> None:
+    """Dev-stage schema evolution without a full migration tool: for each table that
+    already existed before this process started, add any model columns missing from the
+    actual SQLite table. Brand-new tables are skipped — create_all() just created them with
+    every current column already. Safe under concurrent startup from both services: a
+    losing race on ADD COLUMN raises 'duplicate column', which is caught and ignored.
+    """
+    with engine.connect() as conn:
+        for table in Base.metadata.sorted_tables:
+            existing_columns = {
+                row[1] for row in conn.exec_driver_sql(f'PRAGMA table_info("{table.name}")').fetchall()
+            }
+            if not existing_columns:
+                continue
+            for column in table.columns:
+                if column.name in existing_columns:
+                    continue
+                col_type = column.type.compile(dialect=engine.dialect)
+                try:
+                    conn.exec_driver_sql(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}')
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+
+
 def init_db() -> None:
     from . import models  # noqa: F401  (ensure models are registered on Base)
 
     Base.metadata.create_all(bind=engine)
+    _run_lightweight_migrations()

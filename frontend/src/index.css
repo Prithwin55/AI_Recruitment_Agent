@@ -27,6 +27,13 @@
   --input: oklch(0.91 0.01 260);
   --ring: oklch(0.47 0.17 264);
   --radius: 0.65rem;
+
+  /* Chart categorical series — validated palette, fixed order (see dataviz skill) */
+  --chart-series-1: #2a78d6; /* blue */
+  --chart-series-2: #008300; /* green */
+  --chart-series-3: #e87ba4; /* magenta */
+  --chart-grid: #e1e0d9;
+  --chart-axis: #898781;
 }
 
 .dark {
@@ -53,6 +60,12 @@
   --border: oklch(0.3 0.015 260);
   --input: oklch(0.3 0.015 260);
   --ring: oklch(0.72 0.14 264);
+
+  --chart-series-1: #3987e5;
+  --chart-series-2: #008300;
+  --chart-series-3: #d55181;
+  --chart-grid: #2c2c2a;
+  --chart-axis: #898781;
 }
 
 @theme inline {

@@ -1,6 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from shared.db import session_scope
-from shared.models import Candidate, Phase1Decision, Phase2Status, ProcessingStatus, Recruitment, User
+from shared.models import (
+    Candidate,
+    FinalDecision,
+    InterviewResult,
+    InterviewSession,
+    Phase1Decision,
+    Phase2Status,
+    ProcessingStatus,
+    Recruitment,
+    User,
+)
 
 from ..auth.dependencies import get_current_user
 from .schemas import RecruitmentCounts, RecruitmentCreate, RecruitmentOut
@@ -28,6 +38,18 @@ def _build_counts(db, recruitment_id: str) -> RecruitmentCounts:
             counts.interview_in_progress += 1
         elif c.phase2_status == Phase2Status.COMPLETED:
             counts.interview_completed += 1
+
+    candidate_ids = [c.id for c in candidates]
+    if candidate_ids:
+        counts.shortlisted = (
+            db.query(InterviewResult)
+            .join(InterviewSession, InterviewResult.interview_session_id == InterviewSession.id)
+            .filter(
+                InterviewSession.candidate_id.in_(candidate_ids),
+                InterviewResult.decision == FinalDecision.SHORTLIST,
+            )
+            .count()
+        )
 
     return counts
 
