@@ -4,6 +4,9 @@ export type ServerMessage =
   | { type: 'agent_speaking_end' }
   | { type: 'agent_interrupted' }
   | { type: 'agent_transcript'; text: string }
+  // English TTS runs in the browser: the server sends the sentence text to synthesize + play,
+  // and the client acks with agent_sentence_done once it finishes playing (see pocketTts.ts).
+  | { type: 'agent_say'; text: string; id: number }
   | { type: 'candidate_speaking_start' }
   | { type: 'candidate_transcript_partial'; text: string }
   | { type: 'candidate_transcript_final'; text: string }
@@ -64,6 +67,14 @@ export class InterviewSocket {
     // rather than the server only finding out via an abrupt socket drop.
     if (this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'end_call' }))
+    }
+  }
+
+  sendAgentSentenceDone(id: number): void {
+    // Tell the server the browser finished playing the agent sentence with this id, which
+    // unblocks the server to send the next one (client-side Pocket TTS flow).
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'agent_sentence_done', id }))
     }
   }
 

@@ -72,7 +72,12 @@ class InterviewOrchestrator:
         self.concluded = False
         self.ended = False
 
-        self.provider = DeepgramProvider() if language == "en" else AzureProvider()
+        # English: Deepgram STT + client-side Pocket TTS (the provider's speak() bridges to the
+        # browser via _send_agent_say). Arabic: Azure for both STT and server-side TTS (Pocket
+        # TTS has no Arabic voice), so it keeps the original server-audio path unchanged.
+        self.provider = (
+            DeepgramProvider(on_speak_text=self._send_agent_say) if language == "en" else AzureProvider()
+        )
         language_label = "English" if language == "en" else "Arabic (Omani)"
         system_prompt = build_system_prompt(role_title, jd_text, candidate_summary, language_label, duration_minutes)
         self.conversation = ConversationEngine(system_prompt)
@@ -113,9 +118,26 @@ class InterviewOrchestrator:
         await self._send_json({"type": "agent_interrupted"})
 
     async def _on_agent_audio_chunk(self, data: bytes) -> None:
+        # Only used by the Arabic/Azure server-TTS path — English audio is synthesized in the
+        # browser and never touches the server (see DeepgramProvider / _send_agent_say).
         try:
             await self.websocket.send_bytes(data)
         except Exception:  # noqa: BLE001
+            pass
+
+    async def _send_agent_say(self, text: str, seq: int) -> None:
+        """Bridge for client-side (Pocket TTS) speech: hand the sentence text to the browser to
+        synthesize + play. The browser acks with {type: agent_sentence_done, id: seq} once it
+        has finished playing, which unblocks the provider's speak() — see notify_playback_done."""
+        await self._send_json({"type": "agent_say", "text": text, "id": seq})
+
+    def notify_playback_done(self, seq) -> None:
+        notify = getattr(self.provider, "notify_playback_done", None)
+        if notify is None or seq is None:
+            return
+        try:
+            notify(int(seq))
+        except (ValueError, TypeError):
             pass
 
     async def _on_candidate_speaking_start(self) -> None:
@@ -448,6 +470,9 @@ async def interview_websocket(websocket: WebSocket, token: str) -> None:
                     orchestrator.set_muted(True)
                 elif data.get("type") == "mic_unmuted":
                     orchestrator.set_muted(False)
+                elif data.get("type") == "agent_sentence_done":
+                    # Client (Pocket TTS) finished playing the sentence with this id.
+                    orchestrator.notify_playback_done(data.get("id"))
                 elif data.get("type") == "cheating_event":
                     # Client-side proctoring (MediaPipe) reported a video-based integrity event.
                     # It already displays it locally; we just persist it for the recruiter review.

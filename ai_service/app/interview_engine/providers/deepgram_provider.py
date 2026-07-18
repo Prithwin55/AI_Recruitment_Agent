@@ -1,7 +1,7 @@
 import asyncio
 import logging
-import time
 from collections import Counter
+from typing import Awaitable, Callable
 
 from deepgram import AsyncDeepgramClient
 from deepgram.core.events import EventType
@@ -10,11 +10,9 @@ from deepgram.listen.v1.types import (
     ListenV1SpeechStarted,
     ListenV1UtteranceEnd,
 )
-from elevenlabs import AsyncElevenLabs
 from shared.config import get_settings
 
 from .base import (
-    AgentAudioChunkEvent,
     AgentSentenceFlushedEvent,
     FinalTranscriptEvent,
     InterimTranscriptEvent,
@@ -27,59 +25,47 @@ logger = logging.getLogger(__name__)
 
 _LISTEN_MODEL = "nova-3"
 _SAMPLE_RATE = 16000
-_SPEAK_OUTPUT_FORMAT = "pcm_24000"  # raw linear16/24kHz/mono — matches what the client expects
-_SPEAK_CHUNK_TIMEOUT_S = 15  # a real stall, not a legitimately long sentence — see speak()
-_SPEAK_COALESCE_BYTES = 4800  # ~100ms @ 24kHz/16-bit/mono — see speak()
-_PLAYBACK_BYTES_PER_SEC = 48000  # 24000 samples/s * 2 bytes/sample (linear16 mono) — pacing math
-_PACING_LEAD_S = 0.5  # keep at most this much audio buffered ahead of real playback — see speak()
+# Upper bound on how long one sentence may take to synthesize + play on the CLIENT before we
+# give up waiting for its "done playing" ack. Generous because the very first sentence of a
+# session also triggers the one-time ~180MB Pocket TTS model download in the browser; every
+# later sentence acks in a few seconds. This is only a stuck-client safety net.
+_PLAYBACK_ACK_TIMEOUT_S = 120
 
 
 class DeepgramProvider(SpeechProvider):
-    """English STT/TTS for the live interview: Deepgram for Listen (STT), ElevenLabs for Speak
-    (TTS) — split across two vendors deliberately, not a naming leftover.
+    """English interview provider. Deepgram does the Listen (STT) side, exactly as before — one
+    persistent WebSocket fed live mic audio, with diarization on for the "multiple voices"
+    integrity signal.
 
-    Listen (STT) is unchanged from before: one persistent Deepgram WebSocket connection for
-    the whole session, continuously fed live mic audio so it never goes idle.
+    The Speak (TTS) side no longer runs on the server at all. Text-to-speech now happens in the
+    candidate's BROWSER via Pocket TTS (WASM) — see frontend/src/lib/interview/pocketTts.ts and
+    the client-driven design in interview_ws.py. This eliminates all server-side TTS work, so N
+    concurrent interviews create zero synthesis load/lag on the server (the whole reason for the
+    change: ElevenLabs/Deepgram/Azure TTS all competed for server resources per session).
 
-    Speak (TTS) was Deepgram Aura until it was replaced here with ElevenLabs — audible
-    stuttering/lag persisted even after fixing the turn-taking and connection-reuse issues on
-    the Deepgram Speak side (see turn_taking.py's interruption-threshold history and this
-    file's own prior persistent-connection-per-turn rewrite). ElevenLabs' text_to_speech.stream()
-    is a one-shot HTTP-streaming call per sentence rather than a persistent WebSocket — verified
-    directly against the real API before writing this: ~0.2-0.7s to first byte per call, back
-    to back, with no explicit connection-reuse bookkeeping needed (httpx pools the underlying
-    connection itself). output_format="pcm_24000" returns raw PCM directly — no container to
-    decode. Interruption aborts the in-flight HTTP stream via aclose() rather than a
-    provider-side "clear" message; perceived silence still comes primarily from the client
-    dropping stale-turn_id audio and flushing its playback queue on agent_interrupted.
-
-    speak() PACES emission to ~real playback rate rather than dumping a whole sentence's audio
-    at once. This matters because ElevenLabs returns a full sentence in ~0.3s but that audio
-    plays over several seconds: if the server forwards it all immediately, speak_sentence()
-    returns almost instantly and the turn-taking state machine flips to LISTENING while the
-    candidate is still hearing the agent — so a genuine barge-in during that window isn't
-    treated as an interruption (state is no longer AGENT_SPEAKING), and the agent's next turn
-    stacks on top of audio still buffered in the browser. Pacing keeps the server's notion of
-    "still speaking" aligned with what the candidate actually hears, so barge-in works
-    throughout the utterance and the client never holds more than ~_PACING_LEAD_S of backlog
-    (making the flush-on-interrupt near-instant). The pacing sleeps also yield the event loop
-    to the interruption-detecting pump task, which the old burst behavior starved.
+    speak() is therefore a thin bridge: it asks the orchestrator to send the sentence text to
+    the client (`on_speak_text`), then blocks until the client reports it has finished PLAYING
+    that sentence. Blocking for the real playback duration is deliberate — it keeps the
+    turn-taking state machine in AGENT_SPEAKING for exactly as long as the candidate is actually
+    hearing the agent, which is what makes barge-in detection correct (unchanged from the paced
+    server-TTS design, just with the timing signal coming from the client instead of from our
+    own audio pacing). Interruption unblocks the pending speak() immediately; the client is told
+    to stop via the orchestrator's existing agent_interrupted message.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, on_speak_text: Callable[[str, int], Awaitable[None]] | None = None) -> None:
         super().__init__()
         settings = get_settings()
         self._client = AsyncDeepgramClient(api_key=settings.deepgram_api_key)
-
-        self._eleven_client = AsyncElevenLabs(api_key=settings.elevenlabs_api_key)
-        self._eleven_voice_id = settings.elevenlabs_voice_id
-        self._eleven_model_id = settings.elevenlabs_model_id
         # Trailing silence before the candidate's turn is finalized — see config. Deepgram's
         # UtteranceEnd (what we treat as end-of-turn) fires after this much word-gap silence.
         self._utterance_end_ms = settings.interview_end_of_turn_silence_ms
-        # Checked once per audio chunk while streaming a sentence — set by stop_speaking() to
-        # abort the in-flight speak() call promptly on a genuine interruption.
-        self._stop_requested = False
+
+        # Bridge to the client TTS. on_speak_text(text, seq) sends the sentence to the browser;
+        # the browser plays it and acks by seq, which resolves the matching event below.
+        self._on_speak_text = on_speak_text
+        self._speak_seq = 0
+        self._playback_acks: dict[int, asyncio.Event] = {}
 
         self._listen_cm = None
         self._listen_conn = None
@@ -139,64 +125,38 @@ class DeepgramProvider(SpeechProvider):
             await self._listen_conn.send_media(chunk)
 
     async def speak(self, text: str, turn_id: int) -> None:
-        self._stop_requested = False
-        stream_iter = self._eleven_client.text_to_speech.stream(
-            voice_id=self._eleven_voice_id,
-            text=text,
-            model_id=self._eleven_model_id,
-            output_format=_SPEAK_OUTPUT_FORMAT,
-        )
-
-        # ElevenLabs streams in very fine-grained pieces (~1KB every ~20ms). We coalesce into
-        # ~100ms frames (fewer, larger websocket sends — the old one-send-per-tiny-chunk firehose
-        # was ~150 sends/sentence) AND pace emission to real playback rate — see the class
-        # docstring for why pacing is what actually makes barge-in work.
-        emitted_bytes = 0
-        t_start = None
-
-        async def emit(frame: bytes) -> None:
-            nonlocal emitted_bytes, t_start
-            if t_start is None:
-                t_start = time.monotonic()
-            await self.events.put(AgentAudioChunkEvent(data=frame, turn_id=turn_id))
-            emitted_bytes += len(frame)
-            ahead = emitted_bytes / _PLAYBACK_BYTES_PER_SEC - (time.monotonic() - t_start)
-            if ahead > _PACING_LEAD_S:
-                await asyncio.sleep(ahead - _PACING_LEAD_S)
-
-        buffer = bytearray()
+        self._speak_seq += 1
+        seq = self._speak_seq
+        ack = asyncio.Event()
+        self._playback_acks[seq] = ack
         try:
-            while not self._stop_requested:
-                try:
-                    chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=_SPEAK_CHUNK_TIMEOUT_S)
-                except StopAsyncIteration:
-                    break
-                except asyncio.TimeoutError:
-                    logger.error("ElevenLabs speak() stalled waiting for audio for turn_id=%s", turn_id)
-                    break
-                if not chunk:
-                    continue
-                buffer.extend(chunk)
-                while len(buffer) >= _SPEAK_COALESCE_BYTES and not self._stop_requested:
-                    frame = bytes(buffer[:_SPEAK_COALESCE_BYTES])
-                    del buffer[:_SPEAK_COALESCE_BYTES]
-                    await emit(frame)
-        finally:
-            if buffer and not self._stop_requested:
-                await emit(bytes(buffer))
+            if self._on_speak_text is not None:
+                await self._on_speak_text(text, seq)
             try:
-                await stream_iter.aclose()
-            except Exception:  # noqa: BLE001
-                pass
+                await asyncio.wait_for(ack.wait(), timeout=_PLAYBACK_ACK_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                logger.warning("Client TTS playback ack timed out for seq=%s (turn_id=%s)", seq, turn_id)
+        finally:
+            self._playback_acks.pop(seq, None)
+            # Resolves turn_taking.speak_sentence()'s flushed.wait() — must fire whether the
+            # sentence was fully played, interrupted, or timed out.
             await self.events.put(AgentSentenceFlushedEvent(turn_id=turn_id))
 
+    def notify_playback_done(self, seq: int) -> None:
+        """Called by the orchestrator when the client reports it finished playing sentence `seq`."""
+        ack = self._playback_acks.get(seq)
+        if ack is not None:
+            ack.set()
+
     async def stop_speaking(self) -> None:
-        # No provider-side "clear" round trip to wait on (unlike the old Deepgram Speak
-        # design) — this just tells the in-flight speak() loop to stop consuming further
-        # chunks on its very next iteration and let its own finally: block close the stream.
-        self._stop_requested = True
+        # Barge-in: unblock any in-flight speak() immediately so speak_sentence() returns and the
+        # turn is superseded. The client is told to stop its own playback via the orchestrator's
+        # agent_interrupted message (on_agent_interrupted), same as before.
+        for ack in list(self._playback_acks.values()):
+            ack.set()
 
     async def close(self) -> None:
+        await self.stop_speaking()
         try:
             if self._listen_conn is not None:
                 await self._listen_conn.send_close_stream()

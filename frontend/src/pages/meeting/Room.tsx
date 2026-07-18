@@ -4,6 +4,7 @@ import { AgentAudioPlayer } from '@/lib/interview/audioPlayback'
 import { CheatingDetector } from '@/lib/interview/cheatingDetection'
 import { InterviewSocket, type ServerMessage } from '@/lib/interview/interviewSocket'
 import { startMicCapture, type MicCapture } from '@/lib/interview/micCapture'
+import { PocketTts, BrowserTts, type AgentVoice } from '@/lib/interview/pocketTts'
 import { Button } from '@/components/ui/button'
 import { AgentOrb, type OrbState } from './AgentOrb'
 
@@ -42,11 +43,24 @@ function formatClock(totalSeconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-export default function MeetingRoom({ token, onEnded }: { token: string; onEnded: (reason: string) => void }) {
+export default function MeetingRoom({
+  token,
+  language = 'en',
+  onEnded,
+}: {
+  token: string
+  language?: string
+  onEnded: (reason: string) => void
+}) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const micRef = useRef<MicCapture | null>(null)
   const playerRef = useRef<AgentAudioPlayer | null>(null)
+  const ttsRef = useRef<AgentVoice | null>(null)
+  const ttsReadyRef = useRef<Promise<void> | null>(null)
+  // Bumped on every barge-in so an agent_say that was interrupted mid-play doesn't send a
+  // (stale) completion ack afterwards.
+  const speechGenRef = useRef(0)
   const socketRef = useRef<InterviewSocket | null>(null)
   const mutedRef = useRef(false)
   const hasEndedRef = useRef(false)
@@ -64,6 +78,8 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
   // Enabled only once the agent decides the interview is over (server sends interview_concluded).
   // There is no automatic end — the candidate hangs up with the End call button below.
   const [canEndCall, setCanEndCall] = useState(false)
+  // True while the in-browser TTS model is still loading (first-time model download).
+  const [ttsLoading, setTtsLoading] = useState(false)
   // Integrity/proctoring flags raised during the interview — shown live on the right and kept.
   const [integrityFlags, setIntegrityFlags] = useState<IntegrityFlag[]>([])
 
@@ -90,6 +106,29 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
 
       const player = new AgentAudioPlayer()
       playerRef.current = player
+
+      // English agent speech is synthesized in THIS browser via Pocket TTS (WASM) — the server
+      // only sends text. Kick off model loading now (it can take a while on a cold cache) so the
+      // voice is ready by the time the welcome arrives. On any failure, fall back to the
+      // browser's built-in speech so the interview still talks. Arabic keeps server-side audio
+      // (Pocket TTS has no Arabic voice), so we don't load it there.
+      if (language === 'en') {
+        const pocket = new PocketTts()
+        ttsRef.current = pocket
+        setTtsLoading(true)
+        ttsReadyRef.current = pocket
+          .init()
+          .catch(async (err) => {
+            console.warn('[tts] Pocket TTS unavailable — falling back to browser speech', err)
+            pocket.close()
+            const fallback = new BrowserTts()
+            await fallback.init().catch(() => {})
+            ttsRef.current = fallback
+          })
+          .finally(() => {
+            if (!cancelled) setTtsLoading(false)
+          })
+      }
 
       function upsertCandidatePartial(text: string, final: boolean) {
         setTranscript((prev) => {
@@ -121,10 +160,30 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
             setOrbState('listening')
             break
           case 'agent_interrupted':
+            // Supersede any in-flight client TTS: bump the generation so its ack is suppressed,
+            // stop synthesis/playback, and (for Arabic server-audio) flush the audio queue.
+            speechGenRef.current++
+            ttsRef.current?.stop()
             player.clear()
             setOrbState('interrupted')
             setTimeout(() => setOrbState((s) => (s === 'interrupted' ? 'listening' : s)), 450)
             break
+          case 'agent_say': {
+            // English: synthesize + play this sentence locally, then ack so the server sends the
+            // next one. Skip the ack if a barge-in superseded it mid-play.
+            const sentenceId = msg.id
+            const gen = speechGenRef.current
+            void (async () => {
+              try {
+                await ttsReadyRef.current
+                await ttsRef.current?.speak(msg.text)
+              } catch (err) {
+                console.warn('[tts] speak failed', err)
+              }
+              if (gen === speechGenRef.current) socketRef.current?.sendAgentSentenceDone(sentenceId)
+            })()
+            break
+          }
           case 'agent_transcript':
             setTranscript((prev) => [...prev, { speaker: 'agent', text: msg.text, partial: false }])
             break
@@ -209,6 +268,8 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
     function cleanup() {
       detectorRef.current?.stop()
       detectorRef.current = null
+      ttsRef.current?.close()
+      ttsRef.current = null
       micRef.current?.stop()
       micRef.current = null
       playerRef.current?.close()
@@ -291,12 +352,14 @@ export default function MeetingRoom({ token, onEnded }: { token: string; onEnded
             <AgentOrb
               state={orbState}
               micAnalyser={micRef.current?.analyser ?? null}
-              agentAnalyser={playerRef.current?.analyser ?? null}
+              agentAnalyser={ttsRef.current?.analyser ?? playerRef.current?.analyser ?? null}
             />
             <p className="text-sm text-slate-400">
               {!ready
                 ? 'Connecting…'
-                : canEndCall
+                : ttsLoading
+                  ? 'Preparing the interviewer’s voice…'
+                  : canEndCall
                   ? 'Interview complete — you can end the call whenever you’re ready.'
                   : orbState === 'speaking'
                     ? 'Agent is speaking'

@@ -38,6 +38,7 @@ export default function PreJoin() {
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const startedLanguageRef = useRef<InterviewLanguageCode>('en')
 
   const loadSession = useCallback(async () => {
     if (!token) return
@@ -114,6 +115,7 @@ export default function PreJoin() {
         // MeetingRoom acquires its own fresh camera/mic stream on mount (permission is already
         // granted, so this doesn't re-prompt) — simpler and less fragile than handing off this
         // preview stream's ownership across components.
+        startedLanguageRef.current = view.session.language
         streamRef.current?.getTracks().forEach((t) => t.stop())
         setView({ kind: 'started' })
       }
@@ -125,7 +127,13 @@ export default function PreJoin() {
   }
 
   if (view.kind === 'started' && token) {
-    return <MeetingRoom token={token} onEnded={(reason) => setView({ kind: 'ended', reason })} />
+    return (
+      <MeetingRoom
+        token={token}
+        language={startedLanguageRef.current}
+        onEnded={(reason) => setView({ kind: 'ended', reason })}
+      />
+    )
   }
 
   return (
