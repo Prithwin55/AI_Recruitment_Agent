@@ -129,6 +129,7 @@ export interface Candidate {
   phase1_strengths: string[] | null
   phase1_gaps: string[] | null
   phase1_decision: Phase1Decision
+  auto_advanced: boolean
   phase2_status: Phase2Status
   created_at: string
   interview_score: number | null
@@ -167,8 +168,31 @@ export interface BulkUploadResult {
   rejected: RejectedUpload[]
 }
 
-export async function listCandidates(recruitmentId: string): Promise<Candidate[]> {
-  const { data } = await api.get<Candidate[]>(`/recruitments/${recruitmentId}/candidates`)
+export interface PaginatedCandidates {
+  interviews: Candidate[] // one page of shortlisted (advanced), ongoing/scheduled first
+  interviews_total: number
+  interviews_page: number
+  ready_to_schedule_total: number // shortlisted & not-yet-scheduled across ALL pages
+  pool: Candidate[] // one page of not-shortlisted candidates, newest activity first
+  pool_total: number
+  pool_page: number
+  page_size: number
+}
+
+export async function listCandidates(
+  recruitmentId: string,
+  opts: { interviewsPage?: number; poolPage?: number; pageSize?: number; search?: string } = {},
+): Promise<PaginatedCandidates> {
+  const { data } = await api.get<PaginatedCandidates>(`/recruitments/${recruitmentId}/candidates`, {
+    params: {
+      interviews_page: opts.interviewsPage ?? 1,
+      pool_page: opts.poolPage ?? 1,
+      // Omit page_size so the backend applies its env-configured default; only send when a caller
+      // explicitly overrides it. The response's page_size reflects whatever was actually used.
+      page_size: opts.pageSize,
+      search: opts.search?.trim() || undefined,
+    },
+  })
   return data
 }
 

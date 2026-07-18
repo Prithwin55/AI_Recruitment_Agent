@@ -63,12 +63,33 @@ def session_scope():
         session.close()
 
 
+def _scalar_default_literal(column) -> str | None:
+    """SQL literal for a column's model-side scalar default (e.g. False -> '0'), or None if the
+    column has no simple scalar default (nullable columns, callable defaults like uuid/utcnow)."""
+    default = getattr(column, "default", None)
+    if default is None or not getattr(default, "is_scalar", False):
+        return None
+    val = default.arg
+    if isinstance(val, bool):
+        return "1" if val else "0"
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, str):
+        return "'" + val.replace("'", "''") + "'"
+    return None
+
+
 def _run_lightweight_migrations() -> None:
     """Dev-stage schema evolution without a full migration tool: for each table that
     already existed before this process started, add any model columns missing from the
     actual SQLite table. Brand-new tables are skipped — create_all() just created them with
     every current column already. Safe under concurrent startup from both services: a
     losing race on ADD COLUMN raises 'duplicate column', which is caught and ignored.
+
+    New columns that have a scalar model default are added WITH that default so existing rows
+    are backfilled (SQLite's bare ADD COLUMN leaves them NULL, which then breaks response models
+    that require a real value). Columns added by an earlier, defaultless version are self-healed
+    by backfilling their NULLs — cheap and idempotent (a no-op once no NULLs remain).
     """
     with engine.connect() as conn:
         for table in Base.metadata.sorted_tables:
@@ -78,11 +99,24 @@ def _run_lightweight_migrations() -> None:
             if not existing_columns:
                 continue
             for column in table.columns:
+                default_literal = _scalar_default_literal(column)
                 if column.name in existing_columns:
+                    if default_literal is not None:
+                        try:
+                            conn.exec_driver_sql(
+                                f'UPDATE "{table.name}" SET "{column.name}" = {default_literal} '
+                                f'WHERE "{column.name}" IS NULL'
+                            )
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
                     continue
                 col_type = column.type.compile(dialect=engine.dialect)
+                ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'
+                if default_literal is not None:
+                    ddl += f" DEFAULT {default_literal}"
                 try:
-                    conn.exec_driver_sql(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}')
+                    conn.exec_driver_sql(ddl)
                     conn.commit()
                 except Exception:
                     conn.rollback()

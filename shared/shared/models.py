@@ -150,12 +150,21 @@ class Candidate(Base):
     phase1_decision: Mapped[Phase1Decision] = mapped_column(
         _str_enum(Phase1Decision), default=Phase1Decision.PENDING
     )
+    # True when the AI auto-advanced this candidate (Phase-1 score >= the shortlist threshold),
+    # as opposed to a recruiter advancing them by hand. Drives the auto-scheduler (which only
+    # emails auto-advanced candidates) and an "AI shortlisted" badge in the UI.
+    auto_advanced: Mapped[bool] = mapped_column(Boolean, default=False)
 
     phase2_status: Mapped[Phase2Status] = mapped_column(
         _str_enum(Phase2Status), default=Phase2Status.NOT_SCHEDULED, index=True
     )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Bumped on every change (scoring, decision, phase2 status, …) so the recruiter view can sort
+    # "latest activity first". Indexed because it's the default sort key for the paginated list.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, index=True
+    )
 
     recruitment: Mapped["Recruitment"] = relationship(back_populates="candidates")
     interview_sessions: Mapped[list["InterviewSession"]] = relationship(

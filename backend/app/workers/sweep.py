@@ -6,6 +6,8 @@ from shared.config import get_settings
 from shared.db import session_scope
 from shared.models import Candidate, InterviewSession, Phase2Status, TokenStatus
 
+from ..scheduling.service import schedule_candidate
+
 logger = logging.getLogger(__name__)
 
 _SWEEP_INTERVAL_SECONDS = 60
@@ -48,11 +50,46 @@ def _sweep_once() -> None:
                     candidate.phase2_status = Phase2Status.EXPIRED
 
 
+async def _auto_schedule_pass() -> None:
+    """Send interview invites to candidates the AI auto-advanced (score >= threshold) that haven't
+    been scheduled yet. This is the automatic half of scheduling — the recruiter never has to
+    click for high scorers. Manually-advanced candidates keep auto_advanced == False and are left
+    for the recruiter to schedule explicitly."""
+    with session_scope() as db:
+        candidate_ids = [
+            row[0]
+            for row in db.query(Candidate.id)
+            .filter(
+                Candidate.auto_advanced.is_(True),
+                Candidate.phase2_status == Phase2Status.NOT_SCHEDULED,
+            )
+            .all()
+        ]
+
+    for candidate_id in candidate_ids:
+        ok, reason = await schedule_candidate(candidate_id)
+        if ok:
+            logger.info("Auto-scheduled interview for candidate %s", candidate_id)
+        else:
+            # Hard failure (no email on file, SMTP not configured, …). Clear the flag so we don't
+            # retry every cycle — the candidate stays advanced and the recruiter can schedule
+            # them manually once the underlying issue is fixed.
+            logger.warning(
+                "Auto-schedule failed for candidate %s: %s — leaving for manual scheduling",
+                candidate_id, reason,
+            )
+            with session_scope() as db:
+                candidate = db.get(Candidate, candidate_id)
+                if candidate is not None:
+                    candidate.auto_advanced = False
+
+
 async def run_forever() -> None:
     logger.info("Interview link sweep worker started (interval=%ss)", _SWEEP_INTERVAL_SECONDS)
     while True:
         try:
             await asyncio.to_thread(_sweep_once)
+            await _auto_schedule_pass()
         except Exception:  # noqa: BLE001 — the sweep loop must never die
             logger.exception("Sweep iteration failed")
         await asyncio.sleep(_SWEEP_INTERVAL_SECONDS)

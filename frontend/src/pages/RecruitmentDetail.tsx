@@ -1,7 +1,7 @@
-import { useRef, useState, type DragEvent } from 'react'
+import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarClock, ChevronDown, ChevronUp, ShieldAlert, UploadCloud } from 'lucide-react'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { CalendarClock, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Search, ShieldAlert, UploadCloud } from 'lucide-react'
 import {
   bulkUploadResumes,
   CHEATING_FLAG_LABELS,
@@ -21,15 +21,28 @@ import {
   ProcessingStatusBadge,
 } from '@/components/StatusBadges'
 
-const ACTIVE_STATUSES = new Set(['queued', 'processing'])
-
 export default function RecruitmentDetail() {
   const { id } = useParams<{ id: string }>()
   const recruitmentId = id!
   const queryClient = useQueryClient()
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [search, setSearch] = useState('')
+  const [interviewsPage, setInterviewsPage] = useState(1)
+  const [poolPage, setPoolPage] = useState(1)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Debounce the search box so we don't fire a request per keystroke, and jump back to page 1
+  // whenever the query changes.
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300)
+    return () => clearTimeout(t)
+  }, [search])
+  useEffect(() => {
+    setInterviewsPage(1)
+    setPoolPage(1)
+  }, [debouncedSearch])
 
   const { data: recruitment } = useQuery({
     queryKey: ['recruitments', recruitmentId],
@@ -37,12 +50,16 @@ export default function RecruitmentDetail() {
     refetchInterval: 5000,
   })
 
-  const { data: candidates } = useQuery({
-    queryKey: ['recruitments', recruitmentId, 'candidates'],
-    queryFn: () => listCandidates(recruitmentId),
-    refetchInterval: (query) => {
-      const list = query.state.data as Candidate[] | undefined
-      return list?.some((c) => ACTIVE_STATUSES.has(c.processing_status)) ? 3000 : false
+  const { data: candidatesData } = useQuery({
+    queryKey: ['recruitments', recruitmentId, 'candidates', interviewsPage, poolPage, debouncedSearch],
+    queryFn: () =>
+      listCandidates(recruitmentId, { interviewsPage, poolPage, search: debouncedSearch }),
+    // Keep the previous page visible while the next one loads (no flicker to empty).
+    placeholderData: keepPreviousData,
+    // Poll while resumes are still being scored (drives the pool's newest-first list to refresh).
+    refetchInterval: () => {
+      const counts = recruitment?.counts
+      return counts && counts.queued + counts.processing > 0 ? 3000 : false
     },
   })
 
@@ -71,8 +88,20 @@ export default function RecruitmentDetail() {
     },
   })
 
-  const readyToSchedule =
-    candidates?.filter((c) => c.phase1_decision === 'advance' && c.phase2_status === 'not_scheduled') ?? []
+  // Both sections come back one page at a time, already ordered by the server (interviews:
+  // ongoing/scheduled first; pool: newest-first). `query` = whether a search is active.
+  const query = debouncedSearch.trim()
+  const interviewCandidates = candidatesData?.interviews ?? []
+  const interviewsTotal = candidatesData?.interviews_total ?? 0
+  const poolCandidates = candidatesData?.pool ?? []
+  const poolTotal = candidatesData?.pool_total ?? 0
+  // Page size is set on the server (env-configured); the response echoes what was actually used.
+  const pageSize = candidatesData?.page_size ?? 20
+  const interviewsPageCount = Math.max(1, Math.ceil(interviewsTotal / pageSize))
+  const poolPageCount = Math.max(1, Math.ceil(poolTotal / pageSize))
+
+  // Count of shortlisted-but-unscheduled candidates across ALL pages (drives the schedule button).
+  const readyToScheduleTotal = candidatesData?.ready_to_schedule_total ?? 0
 
   function handleFiles(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return
@@ -105,61 +134,7 @@ export default function RecruitmentDetail() {
         <StatTile label="Failed" value={recruitment.counts.failed} tone={recruitment.counts.failed > 0 ? 'bad' : undefined} />
       </div>
 
-      {readyToSchedule.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Ready to interview</CardTitle>
-            <CardDescription>
-              {readyToSchedule.length} candidate{readyToSchedule.length === 1 ? '' : 's'} marked to advance —
-              send them a one-time interview link by email (plus a calendar invite, if configured).
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <Button
-              className="w-fit gap-1.5"
-              disabled={scheduleMutation.isPending}
-              onClick={() => scheduleMutation.mutate()}
-            >
-              <CalendarClock className="h-4 w-4" />
-              {scheduleMutation.isPending
-                ? 'Sending…'
-                : `Schedule interview${readyToSchedule.length === 1 ? '' : 's'} for ${readyToSchedule.length}`}
-            </Button>
-
-            {scheduleMutation.data && (
-              <div className="flex flex-col gap-1 text-sm">
-                {scheduleMutation.data.scheduled.length > 0 && (
-                  <p className="text-success">
-                    Sent to {scheduleMutation.data.scheduled.map((s) => s.name ?? s.email).join(', ')}.
-                  </p>
-                )}
-                {scheduleMutation.data.skipped_no_email.length > 0 && (
-                  <p className="text-warning-foreground">
-                    Skipped (no email on file):{' '}
-                    {scheduleMutation.data.skipped_no_email.map((s) => s.name ?? s.candidate_id).join(', ')}.
-                  </p>
-                )}
-                {scheduleMutation.data.failed.length > 0 && (
-                  <div className="text-destructive">
-                    <p>Failed to send:</p>
-                    <ul className="list-inside list-disc">
-                      {scheduleMutation.data.failed.map((f) => (
-                        <li key={f.candidate_id}>
-                          {f.name ?? f.candidate_id} — {f.reason}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
-            {scheduleMutation.isError && (
-              <p className="text-sm text-destructive">Something went wrong sending interview invites.</p>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
+      {/* Upload — kept at the top */}
       <Card>
         <CardHeader>
           <CardTitle>Upload resumes</CardTitle>
@@ -212,27 +187,203 @@ export default function RecruitmentDetail() {
         </CardContent>
       </Card>
 
+      {/* Search candidates — filters both sections below */}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search candidates by name, email, or file…"
+          aria-label="Search candidates"
+          className="w-full rounded-lg border border-input bg-card py-2 pl-9 pr-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        />
+      </div>
+
+      {/* TOP — interviews: shortlisted candidates, ongoing & scheduled first */}
       <Card>
         <CardHeader>
-          <CardTitle>Candidates</CardTitle>
-          <CardDescription>Ranked by AI match score. Highest first.</CardDescription>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="flex items-baseline gap-2">
+                <CardTitle>Interviews</CardTitle>
+                {interviewsTotal > 0 && (
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {interviewsTotal} candidate{interviewsTotal === 1 ? '' : 's'}
+                  </span>
+                )}
+              </div>
+              <CardDescription>
+                Shortlisted candidates and their interview status. Anyone scoring at or above the
+                threshold is shortlisted and scheduled automatically by the AI.
+              </CardDescription>
+            </div>
+            {readyToScheduleTotal > 0 && (
+              <Button
+                className="shrink-0 gap-1.5"
+                disabled={scheduleMutation.isPending}
+                onClick={() => scheduleMutation.mutate()}
+                title="Send interview invites to shortlisted candidates who aren't scheduled yet"
+              >
+                <CalendarClock className="h-4 w-4" />
+                {scheduleMutation.isPending ? 'Sending…' : `Schedule ${readyToScheduleTotal} pending`}
+              </Button>
+            )}
+          </div>
+
+          {scheduleMutation.data && (
+            <div className="mt-3 flex flex-col gap-1 text-sm">
+              {scheduleMutation.data.scheduled.length > 0 && (
+                <p className="text-success">
+                  Sent to {scheduleMutation.data.scheduled.map((s) => s.name ?? s.email).join(', ')}.
+                </p>
+              )}
+              {scheduleMutation.data.skipped_no_email.length > 0 && (
+                <p className="text-warning-foreground">
+                  Skipped (no email on file):{' '}
+                  {scheduleMutation.data.skipped_no_email.map((s) => s.name ?? s.candidate_id).join(', ')}.
+                </p>
+              )}
+              {scheduleMutation.data.failed.length > 0 && (
+                <div className="text-destructive">
+                  <p>Failed to send:</p>
+                  <ul className="list-inside list-disc">
+                    {scheduleMutation.data.failed.map((f) => (
+                      <li key={f.candidate_id}>
+                        {f.name ?? f.candidate_id} — {f.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          {scheduleMutation.isError && (
+            <p className="mt-2 text-sm text-destructive">Something went wrong sending interview invites.</p>
+          )}
         </CardHeader>
         <CardContent className="p-0">
-          {!candidates || candidates.length === 0 ? (
-            <p className="px-6 pb-6 text-sm text-muted-foreground">No resumes uploaded yet.</p>
+          {interviewCandidates.length === 0 ? (
+            <p className="px-6 pb-6 text-sm text-muted-foreground">
+              {query
+                ? `No shortlisted candidates match “${search.trim()}”.`
+                : 'No one is shortlisted yet — high scorers land here automatically once scored, or advance someone from the list below.'}
+            </p>
           ) : (
-            <div className="divide-y divide-border">
-              {candidates.map((candidate) => (
-                <CandidateRow
-                  key={candidate.id}
-                  candidate={candidate}
-                  expanded={expandedId === candidate.id}
-                  onToggle={() => setExpandedId(expandedId === candidate.id ? null : candidate.id)}
-                  onDecide={(decision) => decisionMutation.mutate({ candidateId: candidate.id, decision })}
-                  deciding={decisionMutation.isPending}
-                />
-              ))}
+            <>
+              <div className="divide-y divide-border">
+                {interviewCandidates.map((candidate) => (
+                  <CandidateRow
+                    key={candidate.id}
+                    candidate={candidate}
+                    expanded={expandedId === candidate.id}
+                    onToggle={() => setExpandedId(expandedId === candidate.id ? null : candidate.id)}
+                    onDecide={(decision) => decisionMutation.mutate({ candidateId: candidate.id, decision })}
+                    deciding={decisionMutation.isPending}
+                  />
+                ))}
+              </div>
+              {interviewsPageCount > 1 && (
+                <div className="flex items-center justify-between border-t border-border px-6 py-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1"
+                    disabled={interviewsPage <= 1}
+                    onClick={() => setInterviewsPage((p) => Math.max(1, p - 1))}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Previous
+                  </Button>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    Page {interviewsPage} of {interviewsPageCount}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1"
+                    disabled={interviewsPage >= interviewsPageCount}
+                    onClick={() => setInterviewsPage((p) => Math.min(interviewsPageCount, p + 1))}
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Not shortlisted — newest first, paginated; Advance promotes into Interviews above */}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <CardTitle>Not shortlisted</CardTitle>
+              <CardDescription>
+                Newest activity first. Review a candidate's strengths and click <strong>Advance</strong>{' '}
+                to move them up to Interviews.
+              </CardDescription>
             </div>
+            {poolTotal > 0 && (
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {poolTotal} candidate{poolTotal === 1 ? '' : 's'}
+              </span>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {poolCandidates.length === 0 ? (
+            <p className="px-6 pb-6 text-sm text-muted-foreground">
+              {query
+                ? `No other candidates match “${search.trim()}”.`
+                : (recruitment.counts.total_candidates ?? 0) > 0
+                  ? 'Everyone has been shortlisted.'
+                  : 'No resumes uploaded yet.'}
+            </p>
+          ) : (
+            <>
+              <div className="divide-y divide-border">
+                {poolCandidates.map((candidate) => (
+                  <CandidateRow
+                    key={candidate.id}
+                    candidate={candidate}
+                    expanded={expandedId === candidate.id}
+                    onToggle={() => setExpandedId(expandedId === candidate.id ? null : candidate.id)}
+                    onDecide={(decision) => decisionMutation.mutate({ candidateId: candidate.id, decision })}
+                    deciding={decisionMutation.isPending}
+                  />
+                ))}
+              </div>
+              {poolPageCount > 1 && (
+                <div className="flex items-center justify-between border-t border-border px-6 py-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1"
+                    disabled={poolPage <= 1}
+                    onClick={() => setPoolPage((p) => Math.max(1, p - 1))}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Previous
+                  </Button>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    Page {poolPage} of {poolPageCount}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1"
+                    disabled={poolPage >= poolPageCount}
+                    onClick={() => setPoolPage((p) => Math.min(poolPageCount, p + 1))}
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -293,6 +444,15 @@ function CandidateRow({
         <div className="flex items-center gap-2">
           <ProcessingStatusBadge status={candidate.processing_status} />
           <Phase1DecisionBadge decision={candidate.phase1_decision} />
+          {candidate.auto_advanced && (
+            <Badge
+              variant="outline"
+              className="border-primary/40 text-primary"
+              title="Automatically shortlisted by AI — score met the threshold"
+            >
+              AI shortlisted
+            </Badge>
+          )}
           <Phase2StatusBadge status={candidate.phase2_status} />
           {candidate.interview_decision && (
             <Badge variant={candidate.interview_decision === 'shortlist' ? 'success' : 'destructive'}>
@@ -313,9 +473,11 @@ function CandidateRow({
 
           {canDecide && (
             <div className="flex gap-1">
-              <Button size="sm" variant="outline" disabled={deciding} onClick={() => onDecide('advance')}>
-                Advance
-              </Button>
+              {candidate.phase1_decision !== 'advance' && (
+                <Button size="sm" variant="outline" disabled={deciding} onClick={() => onDecide('advance')}>
+                  Advance
+                </Button>
+              )}
               <Button size="sm" variant="ghost" disabled={deciding} onClick={() => onDecide('hold')}>
                 Hold
               </Button>

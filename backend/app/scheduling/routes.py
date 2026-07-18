@@ -17,8 +17,7 @@ from shared.models import (
 from shared.security import generate_interview_token
 
 from ..auth.dependencies import get_current_user
-from .calendar_service import create_interview_calendar_event
-from .email_service import EmailNotConfigured, send_interview_email
+from .service import schedule_candidate
 from .schemas import (
     FailedCandidate,
     LanguageUpdate,
@@ -39,8 +38,6 @@ async def schedule_interviews(
     recruitment_id: str,
     current_user: User = Depends(get_current_user),
 ) -> ScheduleInterviewsResult:
-    settings = get_settings()
-
     with session_scope() as db:
         recruitment = db.get(Recruitment, recruitment_id)
         if recruitment is None:
@@ -55,7 +52,6 @@ async def schedule_interviews(
             )
             .all()
         )
-        role_title = recruitment.title
         candidate_snapshots = [(c.id, c.name, c.email) for c in candidates]
 
     scheduled: list[ScheduledCandidate] = []
@@ -69,55 +65,11 @@ async def schedule_interviews(
             )
             continue
 
-        now = datetime.now(timezone.utc)
-        token = generate_interview_token()
-        expires_at = now + timedelta(days=settings.interview_link_validity_days)
-
-        with session_scope() as db:
-            interview_session = InterviewSession(
-                candidate_id=candidate_id,
-                token=token,
-                token_status=TokenStatus.PENDING,
-                language=InterviewLanguage.EN,
-                scheduled_start=now,
-                expires_at=expires_at,
-                duration_minutes=settings.interview_duration_minutes,
-            )
-            db.add(interview_session)
-            db.flush()
-            session_id = interview_session.id
-
-        join_url = f"{settings.frontend_base_url}/interview/{token}"
-
-        try:
-            await send_interview_email(email, name, role_title, join_url, settings.interview_link_validity_days)
-        except EmailNotConfigured as exc:
-            with session_scope() as db:
-                db.query(InterviewSession).filter(InterviewSession.id == session_id).delete()
-            failed.append(FailedCandidate(candidate_id=candidate_id, name=name, reason=str(exc)))
-            continue
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to send interview email to candidate %s", candidate_id)
-            with session_scope() as db:
-                db.query(InterviewSession).filter(InterviewSession.id == session_id).delete()
-            failed.append(FailedCandidate(candidate_id=candidate_id, name=name, reason=f"Email send failed: {exc}"))
-            continue
-
-        calendar_event_id = await create_interview_calendar_event(
-            email, name, role_title, join_url, now, settings.interview_duration_minutes
-        )
-
-        with session_scope() as db:
-            interview_session = db.get(InterviewSession, session_id)
-            if interview_session is not None:
-                interview_session.calendar_event_id = calendar_event_id
-            candidate = db.get(Candidate, candidate_id)
-            if candidate is not None:
-                candidate.phase2_status = Phase2Status.SCHEDULED
-
-        scheduled.append(
-            ScheduledCandidate(candidate_id=candidate_id, name=name, email=email, calendar_invited=bool(calendar_event_id))
-        )
+        ok, reason = await schedule_candidate(candidate_id)
+        if ok:
+            scheduled.append(ScheduledCandidate(candidate_id=candidate_id, name=name, email=email, calendar_invited=True))
+        else:
+            failed.append(FailedCandidate(candidate_id=candidate_id, name=name, reason=reason))
 
     return ScheduleInterviewsResult(scheduled=scheduled, failed=failed, skipped_no_email=skipped_no_email)
 

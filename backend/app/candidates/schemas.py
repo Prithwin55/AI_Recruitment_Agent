@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CheatingFlagOut(BaseModel):
@@ -25,8 +25,16 @@ class CandidateOut(BaseModel):
     phase1_strengths: list[str] | None
     phase1_gaps: list[str] | None
     phase1_decision: str
+    auto_advanced: bool = False
     phase2_status: str
     created_at: datetime
+
+    @field_validator("auto_advanced", mode="before")
+    @classmethod
+    def _coerce_auto_advanced(cls, v: object) -> bool:
+        # Candidates that existed before this column was added carry NULL for it (SQLite's
+        # ADD COLUMN doesn't backfill). Treat that as False rather than failing serialization.
+        return bool(v)
 
     # Final interview outcome, populated once Phase 2 scoring completes — None until then.
     interview_score: float | None = None
@@ -42,6 +50,22 @@ class CandidateOut(BaseModel):
     interview_cheating_flags: list[CheatingFlagOut] | None = None
 
     model_config = {"from_attributes": True}
+
+
+class PaginatedCandidates(BaseModel):
+    # Both groups are paginated independently at the same env-configured page size and filtered by
+    # the same search. `interviews` is the shortlisted (advanced) set, ordered ongoing/scheduled
+    # first; `pool` is the not-shortlisted set, ordered newest-activity first. `ready_to_schedule_total`
+    # is the count of shortlisted candidates still awaiting a scheduled interview across ALL pages
+    # (so the "Schedule N pending" button reflects the true total, not just the visible page).
+    interviews: list[CandidateOut]
+    interviews_total: int
+    interviews_page: int
+    ready_to_schedule_total: int
+    pool: list[CandidateOut]
+    pool_total: int
+    pool_page: int
+    page_size: int
 
 
 class RejectedUpload(BaseModel):

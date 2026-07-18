@@ -1,7 +1,9 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy import case, func, or_
+from shared.config import get_settings
 from shared.db import session_scope
 from shared.models import (
     Candidate,
@@ -9,6 +11,7 @@ from shared.models import (
     InterviewResult,
     InterviewSession,
     Phase1Decision,
+    Phase2Status,
     ProcessingStatus,
     Recruitment,
     User,
@@ -24,6 +27,7 @@ from .schemas import (
     CheatingFlagOut,
     DecisionUpdate,
     InterviewSessionOut,
+    PaginatedCandidates,
     RejectedUpload,
     TranscriptTurnOut,
 )
@@ -96,65 +100,132 @@ async def bulk_upload_resumes(
     return BulkUploadResult(created=created, rejected=rejected)
 
 
-@router.get("/recruitments/{recruitment_id}/candidates", response_model=list[CandidateOut])
+def _serialize_with_interview_data(db, candidates: list[Candidate]) -> dict[str, CandidateOut]:
+    """Serialize candidates to CandidateOut, batching interview-result and cheating-flag lookups
+    into exactly TWO queries for the whole set (never one-per-candidate). Returns a dict keyed by
+    candidate id so callers can preserve their own ordering."""
+    out: dict[str, CandidateOut] = {}
+    candidate_ids = [c.id for c in candidates]
+    results_by_candidate: dict[str, InterviewResult] = {}
+    flags_by_candidate: dict[str, list[CheatingFlag]] = {}
+    if candidate_ids:
+        for candidate_id, result in (
+            db.query(InterviewSession.candidate_id, InterviewResult)
+            .join(InterviewResult, InterviewResult.interview_session_id == InterviewSession.id)
+            .filter(InterviewSession.candidate_id.in_(candidate_ids))
+            .all()
+        ):
+            results_by_candidate[candidate_id] = result
+        for candidate_id, flag in (
+            db.query(InterviewSession.candidate_id, CheatingFlag)
+            .join(CheatingFlag, CheatingFlag.interview_session_id == InterviewSession.id)
+            .filter(InterviewSession.candidate_id.in_(candidate_ids))
+            .order_by(CheatingFlag.created_at.asc())
+            .all()
+        ):
+            flags_by_candidate.setdefault(candidate_id, []).append(flag)
+
+    for c in candidates:
+        item = CandidateOut.model_validate(c)
+        result = results_by_candidate.get(c.id)
+        if result is not None:
+            item.interview_score = result.final_score
+            item.interview_decision = result.decision.value if result.decision else None
+            item.interview_rationale = result.rationale
+            item.interview_summary = result.summary
+            item.interview_strengths = result.strengths
+            item.interview_weaknesses = result.weaknesses
+            item.interview_ability_score = result.ability_score
+            item.interview_confidence_score = result.confidence_score
+        if c.id in flags_by_candidate:
+            item.interview_cheating_flags = [
+                CheatingFlagOut.model_validate(f) for f in flags_by_candidate[c.id]
+            ]
+        out[c.id] = item
+    return out
+
+
+@router.get("/recruitments/{recruitment_id}/candidates", response_model=PaginatedCandidates)
 def list_candidates(
     recruitment_id: str,
+    interviews_page: int = Query(1, ge=1),
+    pool_page: int = Query(1, ge=1),
+    page_size: int | None = Query(None, ge=1, le=100),
+    search: str | None = Query(None),
     current_user: User = Depends(get_current_user),
-) -> list[CandidateOut]:
+) -> PaginatedCandidates:
+    # Page size defaults to the env-configured value; an explicit query param can still override
+    # it (bounded 1..100) for callers that need a different page. Both sections use the same size.
+    if page_size is None:
+        page_size = max(1, min(get_settings().candidates_page_size, 100))
     with session_scope() as db:
         recruitment = db.get(Recruitment, recruitment_id)
         if recruitment is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recruitment not found")
 
-        candidates = (
-            db.query(Candidate)
-            .filter(Candidate.recruitment_id == recruitment_id)
-            .order_by(Candidate.phase1_score.desc().nullslast(), Candidate.created_at.asc())
+        base = db.query(Candidate).filter(Candidate.recruitment_id == recruitment_id)
+        term = (search or "").strip()
+        if term:
+            like = f"%{term}%"
+            base = base.filter(
+                or_(
+                    Candidate.name.ilike(like),
+                    Candidate.email.ilike(like),
+                    Candidate.original_filename.ilike(like),
+                )
+            )
+
+        # Shortlisted set — paginated, ordered so ongoing/scheduled interviews surface first, then
+        # by Phase-1 score. Ordering lives here (not the client) so it's correct across pages.
+        interviews_query = base.filter(Candidate.phase1_decision == Phase1Decision.ADVANCE)
+        interviews_total = interviews_query.count()
+        ready_to_schedule_total = interviews_query.filter(
+            Candidate.phase2_status == Phase2Status.NOT_SCHEDULED
+        ).count()
+        status_order = case(
+            (Candidate.phase2_status == Phase2Status.IN_PROGRESS, 0),
+            (Candidate.phase2_status == Phase2Status.SCHEDULED, 1),
+            (Candidate.phase2_status == Phase2Status.NOT_SCHEDULED, 2),
+            (Candidate.phase2_status == Phase2Status.COMPLETED, 3),
+            (Candidate.phase2_status == Phase2Status.EXPIRED, 4),
+            (Candidate.phase2_status == Phase2Status.NO_SHOW, 5),
+            else_=9,
+        )
+        interviews = (
+            interviews_query.order_by(
+                status_order,
+                func.coalesce(Candidate.phase1_score, 0).desc(),
+                Candidate.id.desc(),
+            )
+            .offset((interviews_page - 1) * page_size)
+            .limit(page_size)
             .all()
         )
 
-        results_by_candidate: dict[str, InterviewResult] = {}
-        flags_by_candidate: dict[str, list[CheatingFlag]] = {}
-        candidate_ids = [c.id for c in candidates]
-        if candidate_ids:
-            rows = (
-                db.query(InterviewSession.candidate_id, InterviewResult)
-                .join(InterviewResult, InterviewResult.interview_session_id == InterviewSession.id)
-                .filter(InterviewSession.candidate_id.in_(candidate_ids))
-                .all()
-            )
-            for candidate_id, result in rows:
-                results_by_candidate[candidate_id] = result
+        # Not-shortlisted pool — paginated, newest activity first. COALESCE so candidates predating
+        # the updated_at column still sort by their created_at.
+        pool_query = base.filter(Candidate.phase1_decision != Phase1Decision.ADVANCE)
+        pool_total = pool_query.count()
+        latest = func.coalesce(Candidate.updated_at, Candidate.created_at)
+        pool = (
+            pool_query.order_by(latest.desc(), Candidate.id.desc())
+            .offset((pool_page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
 
-            flag_rows = (
-                db.query(InterviewSession.candidate_id, CheatingFlag)
-                .join(CheatingFlag, CheatingFlag.interview_session_id == InterviewSession.id)
-                .filter(InterviewSession.candidate_id.in_(candidate_ids))
-                .order_by(CheatingFlag.created_at.asc())
-                .all()
-            )
-            for candidate_id, flag in flag_rows:
-                flags_by_candidate.setdefault(candidate_id, []).append(flag)
-
-        out = []
-        for c in candidates:
-            item = CandidateOut.model_validate(c)
-            result = results_by_candidate.get(c.id)
-            if result is not None:
-                item.interview_score = result.final_score
-                item.interview_decision = result.decision.value if result.decision else None
-                item.interview_rationale = result.rationale
-                item.interview_summary = result.summary
-                item.interview_strengths = result.strengths
-                item.interview_weaknesses = result.weaknesses
-                item.interview_ability_score = result.ability_score
-                item.interview_confidence_score = result.confidence_score
-            if c.id in flags_by_candidate:
-                item.interview_cheating_flags = [
-                    CheatingFlagOut.model_validate(f) for f in flags_by_candidate[c.id]
-                ]
-            out.append(item)
-        return out
+        # One batched serialization for both pages — 2 queries total, no N+1.
+        serialized = _serialize_with_interview_data(db, interviews + pool)
+        return PaginatedCandidates(
+            interviews=[serialized[c.id] for c in interviews],
+            interviews_total=interviews_total,
+            interviews_page=interviews_page,
+            ready_to_schedule_total=ready_to_schedule_total,
+            pool=[serialized[c.id] for c in pool],
+            pool_total=pool_total,
+            pool_page=pool_page,
+            page_size=page_size,
+        )
 
 
 @router.patch("/candidates/{candidate_id}/decision", response_model=CandidateOut)

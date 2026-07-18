@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     default_admin_email: str = "admin@company.local"
     default_admin_password: str = "ChangeMe123!"
 
+    # --- Recruiter portal ---
+    candidates_page_size: int = 20  # not-shortlisted candidates listed per page
+
     # --- Interview behavior ---
     interview_duration_minutes: int = 25
     interview_link_validity_days: int = 3
