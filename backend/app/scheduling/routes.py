@@ -87,7 +87,7 @@ async def schedule_interviews(
             db.flush()
             session_id = interview_session.id
 
-        join_url = f"{settings.frontend_url}/interview/{token}"
+        join_url = f"{settings.frontend_base_url}/interview/{token}"
 
         try:
             await send_interview_email(email, name, role_title, join_url, settings.interview_link_validity_days)

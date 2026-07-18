@@ -64,7 +64,7 @@ class _PendingInterruption:
 class TurnTakingEngine:
     """Owns one provider for the session lifetime and interprets its normalized event
     stream into turn-taking decisions: genuine barge-in vs. noise, trailing-pause tolerance
-    (delegated to the provider's own endpointing — see DeepgramProvider/AzureProvider),
+    (delegated to the provider's endpointing/VAD — see SherpaOnnxProvider/AzureProvider),
     mute-gating, and sentence-level tracking of what the agent actually said."""
 
     def __init__(self, provider: SpeechProvider, callbacks: TurnTakingCallbacks) -> None:
@@ -164,8 +164,9 @@ class TurnTakingEngine:
         each other; (2) a final dominated by a speaker other than the established candidate =
         a different person took a turn. Best-effort — diarization on one far-field mic isn't
         perfect — so the orchestrator debounces and the recruiter reviews, rather than any
-        automatic action. Only providers that diarize populate event.speakers (Deepgram); Azure
-        leaves it empty, making this a no-op for Arabic."""
+        automatic action. Only a provider whose STT emits speaker labels populates
+        event.speakers; the current SherpaOnnx (English) and Azure (Arabic) paths leave it
+        empty, making this a no-op — the plumbing stays for a future diarizing STT."""
         if not event.speakers:
             return
         second_voice = len(event.speakers) >= 2

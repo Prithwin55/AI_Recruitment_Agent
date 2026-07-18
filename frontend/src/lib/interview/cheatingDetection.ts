@@ -10,8 +10,8 @@ import { FaceLandmarker, FilesetResolver, type FaceLandmarkerResult } from '@med
  *
  * Everything degrades gracefully: if the model can't load (offline, blocked CDN, unsupported
  * device) the interview continues completely normally with detection simply disabled. The
- * "multiple voices" signal is NOT done here — that's detected server-side from the Deepgram
- * stream. This is purely informational and never affects interview scoring. */
+ * "multiple voices" signal is NOT done here — it's a server-side concern (active only when the
+ * STT provides speaker labels). This is purely informational and never affects interview scoring. */
 
 export type CheatKind = 'multiple_faces' | 'no_face' | 'looking_away' | 'head_turned'
 

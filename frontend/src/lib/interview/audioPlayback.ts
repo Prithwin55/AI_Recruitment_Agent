@@ -1,5 +1,5 @@
-// Both providers (Deepgram Aura-2 for English, Azure Neural for Arabic-Omani) are configured
-// server-side to emit raw linear16 PCM at this rate — see deepgram_provider.py / azure_provider.py.
+// The Arabic/Azure server-side TTS path emits raw linear16 PCM at this rate (see
+// azure_provider.py). English audio is synthesized in-browser by Pocket TTS, not played here.
 const PLAYBACK_SAMPLE_RATE = 24000
 
 // Small cushion applied only when starting a fresh utterance (the schedule was empty/caught

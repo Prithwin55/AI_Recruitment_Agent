@@ -17,13 +17,19 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
 
-    # --- Deepgram (English STT) ---
-    deepgram_api_key: str = ""
+    # --- SherpaOnnx (English STT — external streaming WebSocket ASR server) ---
+    sherpa_stt_host: str = "transcription-dev.vconsol.com"
+    sherpa_stt_path: str = "/en"  # per-language path on the ASR server
+    sherpa_stt_port: int = 443
+    sherpa_stt_use_wss: bool = True
+    sherpa_stt_secret_key: str = ""
 
-    # --- ElevenLabs (English TTS) ---
-    elevenlabs_api_key: str = ""
-    elevenlabs_voice_id: str = ""
-    elevenlabs_model_id: str = "eleven_flash_v2_5"
+    # --- Server-side VAD (supplies the turn signals SherpaOnnx does not emit) ---
+    # webrtcvad aggressiveness 0-3 (higher = more aggressively classifies frames as speech).
+    vad_aggressiveness: int = 2
+    # Sustained speech required before a "speech started" (barge-in arm) signal — debounces blips.
+    vad_onset_ms: int = 150
+    # (End-of-turn silence reuses interview_end_of_turn_silence_ms below — the same pause-tolerance knob.)
 
     # --- Azure Speech (Arabic-Omani STT/TTS) ---
     azure_speech_key: str = ""
@@ -64,11 +70,27 @@ class Settings(BaseSettings):
     interview_end_of_turn_silence_ms: int = 2000
 
     # --- Networking ---
-    frontend_url: str = "http://localhost:5173"
+    # URL and port are kept SEPARATE for each service: the URL holds only scheme + host (no port
+    # baked in), and the port is its own value. Use the *_base_url properties below when you need
+    # the combined "url:port" address (e.g. CORS origins, the candidate interview link).
+    frontend_url: str = "http://localhost"
+    frontend_port: int = 5173
+    backend_url: str = "http://localhost"
     backend_port: int = 8000
+    ai_service_url: str = "http://localhost"
     ai_service_port: int = 8100
-    backend_url: str = "http://localhost:8000"
-    ai_service_url: str = "http://localhost:8100"
+
+    @property
+    def frontend_base_url(self) -> str:
+        return f"{self.frontend_url}:{self.frontend_port}"
+
+    @property
+    def backend_base_url(self) -> str:
+        return f"{self.backend_url}:{self.backend_port}"
+
+    @property
+    def ai_service_base_url(self) -> str:
+        return f"{self.ai_service_url}:{self.ai_service_port}"
 
     # --- Storage ---
     storage_dir: str = str(REPO_ROOT / "storage")

@@ -22,7 +22,7 @@ from shared.models import (
 from ..post_interview.analyzer import run_post_interview_analysis
 from .conversation import ConversationEngine, build_candidate_summary, build_system_prompt, scripted_welcome
 from .providers.azure_provider import AzureProvider
-from .providers.deepgram_provider import DeepgramProvider
+from .providers.sherpa_provider import SherpaOnnxProvider
 from .transcript import TranscriptRecorder
 from .turn_taking import TurnTakingCallbacks, TurnTakingEngine
 
@@ -72,11 +72,12 @@ class InterviewOrchestrator:
         self.concluded = False
         self.ended = False
 
-        # English: Deepgram STT + client-side Pocket TTS (the provider's speak() bridges to the
-        # browser via _send_agent_say). Arabic: Azure for both STT and server-side TTS (Pocket
-        # TTS has no Arabic voice), so it keeps the original server-audio path unchanged.
+        # English: SherpaOnnx STT (external WS ASR) + a local VAD for turn signals + client-side
+        # Pocket TTS (the provider's speak() bridges to the browser via _send_agent_say). Arabic:
+        # Azure for both STT and server-side TTS (SherpaOnnx here / Pocket TTS have no Arabic
+        # voice), so it keeps the original server-audio path unchanged.
         self.provider = (
-            DeepgramProvider(on_speak_text=self._send_agent_say) if language == "en" else AzureProvider()
+            SherpaOnnxProvider(on_speak_text=self._send_agent_say) if language == "en" else AzureProvider()
         )
         language_label = "English" if language == "en" else "Arabic (Omani)"
         system_prompt = build_system_prompt(role_title, jd_text, candidate_summary, language_label, duration_minutes)
@@ -119,7 +120,7 @@ class InterviewOrchestrator:
 
     async def _on_agent_audio_chunk(self, data: bytes) -> None:
         # Only used by the Arabic/Azure server-TTS path — English audio is synthesized in the
-        # browser and never touches the server (see DeepgramProvider / _send_agent_say).
+        # browser and never touches the server (see SherpaOnnxProvider / _send_agent_say).
         try:
             await self.websocket.send_bytes(data)
         except Exception:  # noqa: BLE001
@@ -437,7 +438,7 @@ async def interview_websocket(websocket: WebSocket, token: str) -> None:
         )
         await websocket.close(code=4500)
         return
-    if language == "en" and not settings.deepgram_api_key:
+    if language == "en" and not settings.sherpa_stt_secret_key:
         await websocket.send_json({"type": "error", "message": "Interview voice engine is not configured"})
         await websocket.close(code=4500)
         return
