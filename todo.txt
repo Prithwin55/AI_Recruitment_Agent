@@ -1,6 +1,5 @@
 analytics 
 admin account
-ui changes 
-pagination for recruitments
+ui changes
 tenent architechture
 noise cancellation

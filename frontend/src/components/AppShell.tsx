@@ -2,6 +2,7 @@ import { Outlet, Link, useLocation } from 'react-router-dom'
 import { LayoutDashboard, LogOut, Sparkles, Users } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { Button } from '@/components/ui/button'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
@@ -46,7 +47,8 @@ export default function AppShell() {
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
-            <span>{user?.email}</span>
+            <span className="hidden sm:inline">{user?.email}</span>
+            <ThemeToggle />
             <Button variant="ghost" size="sm" onClick={logout} className="gap-1.5">
               <LogOut className="h-4 w-4" />
               Sign out
