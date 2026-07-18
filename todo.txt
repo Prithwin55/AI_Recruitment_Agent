@@ -1,4 +1,6 @@
-ui updates
-our speech to text
-opensource text to speech
-our turn taking vad implementation
+analytics 
+admin account
+ui changes 
+pagination for recruitments
+tenent architechture
+noise cancellation

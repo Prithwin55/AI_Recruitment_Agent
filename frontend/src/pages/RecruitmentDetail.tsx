@@ -56,10 +56,15 @@ export default function RecruitmentDetail() {
       listCandidates(recruitmentId, { interviewsPage, poolPage, search: debouncedSearch }),
     // Keep the previous page visible while the next one loads (no flicker to empty).
     placeholderData: keepPreviousData,
-    // Poll while resumes are still being scored (drives the pool's newest-first list to refresh).
+    // Poll while there's an in-flight transition to reflect: resumes still being scored (candidates
+    // moving into Interviews / Rejected) or AI-advanced candidates still awaiting the sweep's
+    // auto-schedule (not_scheduled -> scheduled). Stops once everything has settled.
     refetchInterval: () => {
       const counts = recruitment?.counts
-      return counts && counts.queued + counts.processing > 0 ? 3000 : false
+      const inFlight = counts
+        ? counts.queued + counts.processing + counts.awaiting_schedule
+        : 0
+      return inFlight > 0 ? 3000 : false
     },
   })
 

@@ -77,18 +77,25 @@ async def _process_candidate(candidate_id: str) -> None:
         candidate.phase1_gaps = result.gaps
         candidate.processing_status = ProcessingStatus.SCORED
 
-        # AI decision: candidates at or above the shortlist threshold are auto-advanced (and,
-        # from there, auto-scheduled by the backend sweep). Only touch PENDING candidates so a
-        # recruiter's manual hold/reject/advance is never overridden on a re-score. Below-threshold
-        # candidates stay PENDING for the recruiter to review and advance by hand if they choose.
+        # AI decision (only ever applied to PENDING candidates, so a recruiter's manual
+        # hold/reject/advance is never overridden on a re-score):
+        #   score >= threshold -> ADVANCE (auto-scheduled from there by the backend sweep)
+        #   score <  threshold -> REJECT  (the recruiter can still advance them by hand)
         threshold = get_settings().phase1_shortlist_threshold
-        if candidate.phase1_decision == Phase1Decision.PENDING and (result.match_score or 0) >= threshold:
-            candidate.phase1_decision = Phase1Decision.ADVANCE
-            candidate.auto_advanced = True
-            logger.info(
-                "Auto-advanced candidate %s (score %.0f >= threshold %s)",
-                candidate_id, result.match_score, threshold,
-            )
+        if candidate.phase1_decision == Phase1Decision.PENDING:
+            if (result.match_score or 0) >= threshold:
+                candidate.phase1_decision = Phase1Decision.ADVANCE
+                candidate.auto_advanced = True
+                logger.info(
+                    "Auto-advanced candidate %s (score %.0f >= threshold %s)",
+                    candidate_id, result.match_score, threshold,
+                )
+            else:
+                candidate.phase1_decision = Phase1Decision.REJECT
+                logger.info(
+                    "Auto-rejected candidate %s (score %.0f < threshold %s)",
+                    candidate_id, result.match_score or 0, threshold,
+                )
 
 
 def _mark_failed(candidate_id: str, reason: str) -> None:

@@ -15,6 +15,9 @@ class RecruitmentCounts(BaseModel):
     scored: int = 0
     failed: int = 0
     advanced: int = 0
+    # AI-advanced candidates still waiting for the sweep worker to auto-schedule them. Drives the
+    # UI's "keep polling" signal so the not_scheduled -> scheduled flip shows up in near real time.
+    awaiting_schedule: int = 0
     interview_in_progress: int = 0
     interview_completed: int = 0
     shortlisted: int = 0

@@ -179,8 +179,12 @@ def list_candidates(
         # by Phase-1 score. Ordering lives here (not the client) so it's correct across pages.
         interviews_query = base.filter(Candidate.phase1_decision == Phase1Decision.ADVANCE)
         interviews_total = interviews_query.count()
+        # "Ready to schedule" = only candidates the recruiter advanced by hand and hasn't scheduled
+        # yet. AI-advanced (auto_advanced) candidates are scheduled automatically by the sweep, so
+        # they never surface a manual "Schedule pending" action. isnot(True) also covers legacy NULLs.
         ready_to_schedule_total = interviews_query.filter(
-            Candidate.phase2_status == Phase2Status.NOT_SCHEDULED
+            Candidate.phase2_status == Phase2Status.NOT_SCHEDULED,
+            Candidate.auto_advanced.isnot(True),
         ).count()
         status_order = case(
             (Candidate.phase2_status == Phase2Status.IN_PROGRESS, 0),
@@ -240,6 +244,10 @@ def update_candidate_decision(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
 
         candidate.phase1_decision = Phase1Decision(payload.decision)
+        # A manual decision overrides the AI's: clear the auto flag so this candidate is scheduled
+        # via the recruiter's "Schedule pending" button (not the auto-schedule sweep) and no longer
+        # shows the "AI shortlisted" badge.
+        candidate.auto_advanced = False
         db.flush()
         db.refresh(candidate)
         return CandidateOut.model_validate(candidate)

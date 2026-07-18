@@ -33,6 +33,9 @@ def _build_counts(db, recruitment_id: str) -> RecruitmentCounts:
 
         if c.phase1_decision == Phase1Decision.ADVANCE:
             counts.advanced += 1
+            # AI-advanced but not yet scheduled — the sweep will pick these up shortly.
+            if c.auto_advanced and c.phase2_status == Phase2Status.NOT_SCHEDULED:
+                counts.awaiting_schedule += 1
 
         if c.phase2_status == Phase2Status.IN_PROGRESS:
             counts.interview_in_progress += 1

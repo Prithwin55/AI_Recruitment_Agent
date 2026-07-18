@@ -75,6 +75,7 @@ export interface RecruitmentCounts {
   scored: number
   failed: number
   advanced: number
+  awaiting_schedule: number
   interview_in_progress: number
   interview_completed: number
   shortlisted: number
