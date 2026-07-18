@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from shared.config import get_settings
 from shared.db import init_db
 
+from .admin.routes import router as admin_router
 from .auth.routes import router as auth_router
 from .auth.seed import seed_default_user
 from .candidates.routes import router as candidates_router
@@ -49,6 +50,7 @@ def health() -> dict:
 
 
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(recruitments_router)
 app.include_router(candidates_router)
 app.include_router(scheduling_router)

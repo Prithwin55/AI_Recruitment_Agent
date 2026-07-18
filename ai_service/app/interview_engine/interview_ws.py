@@ -17,7 +17,9 @@ from shared.models import (
     Recruitment,
     Speaker,
     TokenStatus,
+    UsageService,
 )
+from shared.usage import record_usage_async
 
 from ..post_interview.analyzer import run_post_interview_analysis
 from .conversation import ConversationEngine, build_candidate_summary, build_system_prompt, scripted_welcome
@@ -103,6 +105,12 @@ class InterviewOrchestrator:
         self._cheating_flag_count = 0
         self._last_voice_flag_at = -_VOICE_FLAG_DEBOUNCE_S
 
+        # Usage metering, accumulated in-memory per session and flushed as two UsageEvent rows at
+        # finalize() — a per-chunk DB write in the hot audio path would be absurd. STT audio is
+        # 16 kHz / 16-bit mono PCM, so seconds = bytes / 32000.
+        self._stt_audio_bytes = 0
+        self._tts_characters = 0
+
     async def _send_json(self, payload: dict) -> None:
         try:
             await self.websocket.send_json(payload)
@@ -183,6 +191,7 @@ class InterviewOrchestrator:
         delivered_ok = True
         for sentence in sentences:
             await self._send_json({"type": "agent_transcript", "text": sentence})
+            self._tts_characters += len(sentence)
             ok = await self.engine.speak_sentence(sentence)
             self.transcript.record_agent_turn(sentence, self.engine.turn_id, cut_off=not ok)
             if not ok:
@@ -202,6 +211,7 @@ class InterviewOrchestrator:
                 # time's-up wrap-up: once we're saying goodbye, nothing should cut it off.
                 self.engine.set_interruptible(False)
             await self._send_json({"type": "agent_transcript", "text": sentence})
+            self._tts_characters += len(sentence)
             ok = await self.engine.speak_sentence(sentence)
             # Even when interrupted mid-sentence, the sentence still belongs in what the agent
             # "said": dropping it entirely (as opposed to just marking it cut off) would leave
@@ -268,6 +278,7 @@ class InterviewOrchestrator:
                 await self.conclude()
 
     async def feed_audio(self, chunk: bytes) -> None:
+        self._stt_audio_bytes += len(chunk)
         await self.engine.feed_audio(chunk)
 
     def set_muted(self, muted: bool) -> None:
@@ -395,6 +406,11 @@ class InterviewOrchestrator:
                         transcript_file_path=str(self.transcript.path),
                     )
                 )
+
+        # Flush this session's accumulated STT/TTS usage (16 kHz 16-bit mono -> bytes/32000 s).
+        context = f"interview:{self.session_id}"
+        await record_usage_async(UsageService.STT, seconds=self._stt_audio_bytes / 32000.0, context=context)
+        await record_usage_async(UsageService.TTS, characters=self._tts_characters, context=context)
 
         asyncio.create_task(run_post_interview_analysis(self.session_id))
 

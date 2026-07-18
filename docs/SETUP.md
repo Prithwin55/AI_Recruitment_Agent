@@ -57,6 +57,28 @@ password: ChangeMe123!         (DEFAULT_ADMIN_PASSWORD in .env)
 
 You'll be required to change this password on first login.
 
+### Admin panel (usage & cost dashboard)
+
+Separate from the recruiter account. Open **http://localhost:5173/admin** and sign in with:
+
+```
+username: admin              (ADMIN_USERNAME in .env)
+password: <your password>    (ADMIN_PASSWORD in .env)
+```
+
+Login stays **disabled** until `ADMIN_PASSWORD` is set to a non-empty value.
+
+The dashboard shows date-filterable usage and ₹ cost for:
+
+| Service | What is metered | Cost formula (env rate) | USD reference → default ₹ at 86/$ |
+|---------|-----------------|-------------------------|-----------------------------------|
+| AI agent (Claude) | input + output tokens | tokens/1e6 × `PRICE_INR_LLM_PER_MTOK_*` | $3 / $15 per 1M in/out → ₹258 / ₹1290 |
+| STT | audio minutes | minutes × `PRICE_INR_STT_PER_MINUTE` | $0.0154/min → ₹1.3244 |
+| TTS | characters spoken | chars/1000 × `PRICE_INR_TTS_PER_1K_CHARS` | $0.10/1k chars → ₹8.60 |
+| OCR | vision-parsed resume pages | pages/1000 × `PRICE_INR_OCR_PER_1K_PAGES` | $1.50/1k pages → ₹129 |
+
+Rates are applied at **read time** — changing a `PRICE_INR_*` value re-prices all history. Usage rows are written as resume scoring and interviews run (empty dashboard = nothing metered yet).
+
 ## Data storage
 
 Everything is stored on the local filesystem under `storage/` (no S3/MinIO, per product requirement): `storage/app.db` (SQLite), `storage/resumes/`, `storage/recordings/`, `storage/transcripts/`. This directory is git-ignored.

@@ -3,6 +3,8 @@ from typing import AsyncIterator
 
 from anthropic import AsyncAnthropic
 from shared.config import get_settings
+from shared.models import UsageService
+from shared.usage import record_usage_async
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?؟])\s+")
 _CONCLUDE_MARKER = "[[END_INTERVIEW]]"
@@ -122,6 +124,18 @@ async def stream_claude_sentences(
                     yield sentence
                 buffer = buffer[match.end() :]
                 match = _SENTENCE_BOUNDARY.search(buffer)
+
+        # Meter the finished stream (usage totals only exist once the stream completes).
+        try:
+            final = await stream.get_final_message()
+            await record_usage_async(
+                UsageService.LLM,
+                input_tokens=final.usage.input_tokens,
+                output_tokens=final.usage.output_tokens,
+                context="conversation",
+            )
+        except Exception:  # noqa: BLE001 — metering must never break the live conversation
+            pass
 
     remainder = buffer.strip()
     if remainder:

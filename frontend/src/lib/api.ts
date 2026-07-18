@@ -28,7 +28,9 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       setToken(null)
-      if (!window.location.pathname.startsWith('/login')) {
+      const path = window.location.pathname
+      // Don't bounce the admin panel (or login) into the recruiter login flow.
+      if (!path.startsWith('/login') && !path.startsWith('/admin')) {
         window.location.href = '/login'
       }
     }
@@ -407,5 +409,78 @@ export async function getCandidate(candidateId: string): Promise<CandidateDetail
 
 export async function fetchResumeBlob(candidateId: string): Promise<Blob> {
   const { data } = await api.get<Blob>(`/candidates/${candidateId}/resume`, { responseType: 'blob' })
+  return data
+}
+
+// --- Admin panel (separate credential set from recruiter accounts) ---
+
+const ADMIN_TOKEN_KEY = 'admin_token'
+
+export function getAdminToken(): string | null {
+  return localStorage.getItem(ADMIN_TOKEN_KEY)
+}
+
+export function setAdminToken(token: string | null): void {
+  if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token)
+  else localStorage.removeItem(ADMIN_TOKEN_KEY)
+}
+
+// Own axios instance: the main `api` interceptor injects the RECRUITER token, which the admin
+// endpoints reject. This one injects the admin token and clears it on 401 (no /login redirect —
+// the admin page renders its own login form).
+export const adminApi = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? '/api',
+})
+
+adminApi.interceptors.request.use((config) => {
+  const token = getAdminToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+adminApi.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) setAdminToken(null)
+    return Promise.reject(error)
+  },
+)
+
+export async function adminLogin(username: string, password: string): Promise<string> {
+  const { data } = await adminApi.post<{ access_token: string }>('/admin/login', { username, password })
+  return data.access_token
+}
+
+export interface ServiceUsage {
+  service: 'llm' | 'stt' | 'tts' | 'ocr'
+  input_tokens: number
+  output_tokens: number
+  minutes: number
+  characters: number
+  pages: number
+  events: number
+  cost_inr: number
+}
+
+export interface UsagePricing {
+  llm_per_mtok_input: number
+  llm_per_mtok_output: number
+  stt_per_minute: number
+  tts_per_1k_chars: number
+  ocr_per_1k_pages: number
+}
+
+export interface UsageReport {
+  start: string | null
+  end: string | null
+  services: ServiceUsage[]
+  total_cost_inr: number
+  pricing: UsagePricing
+}
+
+export async function getAdminUsage(opts: { start?: string; end?: string } = {}): Promise<UsageReport> {
+  const { data } = await adminApi.get<UsageReport>('/admin/usage', {
+    params: { start: opts.start || undefined, end: opts.end || undefined },
+  })
   return data
 }

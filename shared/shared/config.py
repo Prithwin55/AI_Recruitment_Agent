@@ -55,6 +55,24 @@ class Settings(BaseSettings):
     default_admin_email: str = "admin@company.local"
     default_admin_password: str = "ChangeMe123!"
 
+    # --- Admin panel ---
+    # Credentials for the /admin usage dashboard (separate from recruiter accounts). Login is
+    # DISABLED until ADMIN_PASSWORD is set to a non-empty value in the env.
+    admin_username: str = "admin@gmail.com"
+    admin_password: str = ""
+
+    # --- Usage pricing (₹, env-configurable) ---
+    # Defaults derived from the reference USD rates at ₹86/$:
+    #   LLM  $3 / $15 per million input/output tokens -> ₹258 / ₹1290
+    #   STT  $0.0154 per minute                        -> ₹1.3244
+    #   TTS  $0.10 per 1,000 characters                -> ₹8.60
+    #   OCR  $1.50 per 1,000 pages                     -> ₹129
+    price_inr_llm_per_mtok_input: float = 258.0
+    price_inr_llm_per_mtok_output: float = 1290.0
+    price_inr_stt_per_minute: float = 1.3244
+    price_inr_tts_per_1k_chars: float = 8.60
+    price_inr_ocr_per_1k_pages: float = 129.0
+
     # --- Recruiter portal ---
     candidates_page_size: int = 20  # not-shortlisted candidates listed per page
     recruitments_page_size: int = 12  # recruitments listed per page (list + dashboard)

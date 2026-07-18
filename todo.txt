@@ -1,5 +1,5 @@
-analytics 
-admin account
 ui changes
 tenent architechture
 noise cancellation
+interview page dark mode agent text is black
+admin page issue (Active pricing (from env))

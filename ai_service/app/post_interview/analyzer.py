@@ -12,8 +12,10 @@ from shared.models import (
     InterviewSession,
     Recruitment,
     TranscriptTurn,
+    UsageService,
 )
 from shared.schemas import FinalInterviewScore
+from shared.usage import record_usage_async
 
 from ..interview_engine.conversation import build_candidate_summary
 
@@ -120,7 +122,11 @@ def _aggregate_sentiment(turns: list[TranscriptTurn]) -> dict:
 
 
 async def _score_interview(
-    transcript_text: str, jd_text: str, candidate_summary: str, sentiment_summary: dict
+    transcript_text: str,
+    jd_text: str,
+    candidate_summary: str,
+    sentiment_summary: dict,
+    context: str | None = None,
 ) -> FinalInterviewScore:
     settings = get_settings()
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -146,6 +152,13 @@ Now call record_interview_score with your final assessment."""
         tools=[_TOOL],
         tool_choice={"type": "tool", "name": "record_interview_score"},
         messages=[{"role": "user", "content": user_prompt}],
+    )
+
+    await record_usage_async(
+        UsageService.LLM,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        context=context,
     )
 
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)
@@ -185,7 +198,10 @@ async def run_post_interview_analysis(session_id: str) -> None:
         return
 
     try:
-        score = await _score_interview(transcript_text, jd_text, candidate_summary, sentiment_summary)
+        score = await _score_interview(
+            transcript_text, jd_text, candidate_summary, sentiment_summary,
+            context=f"interview:{session_id}",
+        )
     except Exception:  # noqa: BLE001
         logger.exception("Post-interview scoring failed for session %s", session_id)
         return

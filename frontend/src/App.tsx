@@ -9,6 +9,7 @@ import Recruitments from '@/pages/Recruitments'
 import NewRecruitment from '@/pages/NewRecruitment'
 import RecruitmentDetail from '@/pages/RecruitmentDetail'
 import CandidateDetail from '@/pages/CandidateDetail'
+import Admin from '@/pages/Admin'
 import PreJoin from '@/pages/meeting/PreJoin'
 
 export default function App() {
@@ -17,6 +18,8 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
+          {/* Separate env credentials (ADMIN_USERNAME / ADMIN_PASSWORD); not recruiter auth. */}
+          <Route path="/admin" element={<Admin />} />
           <Route path="/interview/:token" element={<PreJoin />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/change-password" element={<ChangePassword />} />

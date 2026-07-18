@@ -1,6 +1,8 @@
 from anthropic import AsyncAnthropic
 from shared.config import get_settings
+from shared.models import UsageService
 from shared.schemas import ResumeScoreResult
+from shared.usage import record_usage_async
 
 from .extract import ResumeContent
 
@@ -63,7 +65,7 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
-async def score_resume(jd_text: str, resume: ResumeContent) -> ResumeScoreResult:
+async def score_resume(jd_text: str, resume: ResumeContent, context: str | None = None) -> ResumeScoreResult:
     settings = get_settings()
     client = _get_client()
 
@@ -82,6 +84,16 @@ async def score_resume(jd_text: str, resume: ResumeContent) -> ResumeScoreResult
             }
         ],
     )
+
+    # Meter this call: LLM tokens always; OCR pages only when the vision path parsed the file.
+    await record_usage_async(
+        UsageService.LLM,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        context=context,
+    )
+    if resume.extraction_method == "vision" and resume.pages > 0:
+        await record_usage_async(UsageService.OCR, pages=resume.pages, context=context)
 
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)
     if tool_use is None:

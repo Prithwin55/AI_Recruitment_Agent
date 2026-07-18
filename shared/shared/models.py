@@ -270,3 +270,36 @@ class CheatingFlag(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     session: Mapped["InterviewSession"] = relationship()
+
+
+class UsageService(str, enum.Enum):
+    """Which metered external capability a UsageEvent belongs to."""
+
+    LLM = "llm"  # Claude (the AI agent): resume scoring, conversation, sentiment, final analysis
+    STT = "stt"  # speech-to-text: audio minutes streamed to the ASR
+    TTS = "tts"  # text-to-speech: characters synthesized for the agent's voice
+    OCR = "ocr"  # resume parsing via vision (scanned PDFs / images): pages processed
+
+
+class UsageEvent(Base):
+    """One metered slice of external-service consumption. Rows are append-only and aggregated
+    (SUM per service between dates) by the admin usage dashboard; costs are NOT stored — they
+    are derived at read time from the env-configured prices, so a price change re-prices history.
+
+    Quantity semantics per service (unused columns stay 0):
+      LLM -> input_tokens / output_tokens     STT -> seconds
+      TTS -> characters                       OCR -> pages
+    """
+
+    __tablename__ = "usage_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    service: Mapped[UsageService] = mapped_column(_str_enum(UsageService), index=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    characters: Mapped[int] = mapped_column(Integer, default=0)
+    pages: Mapped[int] = mapped_column(Integer, default=0)
+    # Free-form pointer to what consumed it (e.g. "resume:<candidate_id>", "interview:<session_id>").
+    context: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)

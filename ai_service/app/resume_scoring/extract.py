@@ -21,6 +21,19 @@ class ResumeContent:
 
     extraction_method: str  # "text" | "vision"
     content_blocks: list[dict]  # Claude message content blocks to include after the prompt text
+    # Pages processed by the vision (OCR) path — PDF page count, 1 for an image, 0 for the plain
+    # text path. Feeds the admin usage/cost dashboard's OCR metering.
+    pages: int = 0
+
+
+def _pdf_page_count(path: Path) -> int:
+    """Best-effort page count for OCR metering — a broken/encrypted PDF still bills as 1 page."""
+    try:
+        from pypdf import PdfReader
+
+        return max(1, len(PdfReader(str(path)).pages))
+    except Exception:  # noqa: BLE001
+        return 1
 
 
 def build_resume_content(stored_path: str) -> ResumeContent:
@@ -40,6 +53,7 @@ def build_resume_content(stored_path: str) -> ResumeContent:
                     "source": {"type": "base64", "media_type": "application/pdf", "data": data},
                 }
             ],
+            pages=_pdf_page_count(path),
         )
 
     if extension in _IMAGE_MEDIA_TYPES:
@@ -52,6 +66,7 @@ def build_resume_content(stored_path: str) -> ResumeContent:
                     "source": {"type": "base64", "media_type": _IMAGE_MEDIA_TYPES[extension], "data": data},
                 }
             ],
+            pages=1,
         )
 
     if extension == ".docx":

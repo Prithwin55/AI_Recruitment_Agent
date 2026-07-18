@@ -1,6 +1,8 @@
 from anthropic import AsyncAnthropic
 from shared.config import get_settings
+from shared.models import UsageService
 from shared.schemas import SentimentResult
+from shared.usage import record_usage_async
 
 _TOOL = {
     "name": "record_sentiment",
@@ -44,6 +46,13 @@ async def analyze_sentiment(text: str) -> SentimentResult:
         tools=[_TOOL],
         tool_choice={"type": "tool", "name": "record_sentiment"},
         messages=[{"role": "user", "content": f'Candidate said: "{text}"'}],
+    )
+
+    await record_usage_async(
+        UsageService.LLM,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        context="sentiment",
     )
 
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)

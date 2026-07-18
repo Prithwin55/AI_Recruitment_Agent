@@ -46,7 +46,7 @@ async def _process_candidate(candidate_id: str) -> None:
 
     try:
         resume_content = build_resume_content(stored_path)
-        result = await score_resume(jd_text, resume_content)
+        result = await score_resume(jd_text, resume_content, context=f"resume:{candidate_id}")
     except UnsupportedResumeFormat as exc:
         _mark_failed(candidate_id, str(exc))
         return
