@@ -61,6 +61,19 @@ export default function PreJoin() {
     if (view.kind !== 'prejoin') return
 
     let cancelled = false
+
+    // Browsers only expose camera/mic (getUserMedia) on a "secure context": HTTPS, or localhost.
+    // Over plain HTTP on a LAN IP (e.g. http://192.168.x.x:5173) navigator.mediaDevices is
+    // undefined, so guard it — otherwise the call throws and blanks the whole page.
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      setMediaError(
+        'Camera and microphone need a secure (HTTPS) connection. This page is being served over ' +
+          'plain HTTP, which browsers block for media — open the interview over HTTPS (or on the ' +
+          'same machine via localhost).',
+      )
+      return
+    }
+
     navigator.mediaDevices
       .getUserMedia({
         video: true,

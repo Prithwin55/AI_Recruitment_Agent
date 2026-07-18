@@ -31,6 +31,13 @@ export default defineConfig({
     headers: crossOriginIsolationHeaders,
   },
   server: {
+    // host:true binds 0.0.0.0 so other devices on the LAN can reach the dev server;
+    // allowedHosts:true accepts requests for any Host header (e.g. a LAN IP or a tunnel domain).
+    // Dev-only conveniences. NOTE: camera/mic/AudioWorklet still require a SECURE context —
+    // plain http://<lan-ip> is blocked by browsers; use HTTPS (a tunnel, or a local cert) to run
+    // a real interview from another device. See docs / the PreJoin secure-context message.
+    host: true,
+    allowedHosts: true,
     port: 5173,
     headers: crossOriginIsolationHeaders,
     proxy: {
