@@ -90,8 +90,38 @@ export interface Recruitment {
   counts: RecruitmentCounts
 }
 
-export async function listRecruitments(): Promise<Recruitment[]> {
-  const { data } = await api.get<Recruitment[]>('/recruitments')
+export interface PaginatedRecruitments {
+  items: Recruitment[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface RecruitmentStats {
+  recruitments_total: number
+  candidates: number
+  scored: number
+  advancing: number
+  interviewing: number
+  completed: number
+  shortlisted: number
+}
+
+export async function listRecruitments(
+  opts: { page?: number; pageSize?: number } = {},
+): Promise<PaginatedRecruitments> {
+  const { data } = await api.get<PaginatedRecruitments>('/recruitments', {
+    params: {
+      page: opts.page ?? 1,
+      // Omit page_size so the backend applies its env-configured default; only send when overridden.
+      page_size: opts.pageSize,
+    },
+  })
+  return data
+}
+
+export async function getRecruitmentStats(): Promise<RecruitmentStats> {
+  const { data } = await api.get<RecruitmentStats>('/recruitments/stats')
   return data
 }
 

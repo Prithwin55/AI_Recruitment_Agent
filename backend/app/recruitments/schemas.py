@@ -32,3 +32,22 @@ class RecruitmentOut(BaseModel):
     counts: RecruitmentCounts
 
     model_config = {"from_attributes": True}
+
+
+class PaginatedRecruitments(BaseModel):
+    items: list[RecruitmentOut]  # one page, newest first
+    total: int
+    page: int
+    page_size: int
+
+
+class RecruitmentStats(BaseModel):
+    # Aggregate totals across ALL recruitments — drives the dashboard's stat tiles independently of
+    # which page of the recruitment list is being viewed.
+    recruitments_total: int = 0
+    candidates: int = 0
+    scored: int = 0
+    advancing: int = 0
+    interviewing: int = 0
+    completed: int = 0
+    shortlisted: int = 0

@@ -57,6 +57,7 @@ class Settings(BaseSettings):
 
     # --- Recruiter portal ---
     candidates_page_size: int = 20  # not-shortlisted candidates listed per page
+    recruitments_page_size: int = 12  # recruitments listed per page (list + dashboard)
 
     # --- Interview behavior ---
     interview_duration_minutes: int = 25

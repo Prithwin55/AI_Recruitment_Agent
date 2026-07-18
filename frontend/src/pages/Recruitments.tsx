@@ -1,17 +1,25 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Plus, Users } from 'lucide-react'
 import { listRecruitments } from '@/lib/api'
 import { buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Pagination } from '@/components/Pagination'
 
 export default function Recruitments() {
-  const { data: recruitments, isLoading } = useQuery({
-    queryKey: ['recruitments'],
-    queryFn: listRecruitments,
+  const [page, setPage] = useState(1)
+  const { data, isLoading } = useQuery({
+    queryKey: ['recruitments', 'list', page],
+    queryFn: () => listRecruitments({ page }),
+    placeholderData: keepPreviousData,
     refetchInterval: 5000,
   })
+
+  const recruitments = data?.items
+  const pageSize = data?.page_size ?? 12
+  const pageCount = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize))
 
   return (
     <div className="flex flex-col gap-6">
@@ -64,6 +72,8 @@ export default function Recruitments() {
           </Link>
         ))}
       </div>
+
+      <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
     </div>
   )
 }

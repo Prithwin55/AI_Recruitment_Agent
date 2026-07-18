@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ArrowRight, Plus } from 'lucide-react'
 import {
   Bar,
@@ -11,9 +12,10 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { listRecruitments } from '@/lib/api'
+import { getRecruitmentStats, listRecruitments } from '@/lib/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { buttonVariants } from '@/components/ui/button'
+import { Pagination } from '@/components/Pagination'
 import { cn } from '@/lib/utils'
 
 function truncate(text: string, max: number): string {
@@ -21,23 +23,35 @@ function truncate(text: string, max: number): string {
 }
 
 export default function Dashboard() {
-  const { data: recruitments, isLoading } = useQuery({
-    queryKey: ['recruitments'],
-    queryFn: listRecruitments,
+  const [page, setPage] = useState(1)
+
+  // Aggregate totals across ALL recruitments — independent of the current list page.
+  const { data: stats } = useQuery({
+    queryKey: ['recruitments', 'stats'],
+    queryFn: getRecruitmentStats,
     refetchInterval: 10000,
   })
 
-  const totals = (recruitments ?? []).reduce(
-    (acc, r) => ({
-      candidates: acc.candidates + r.counts.total_candidates,
-      scored: acc.scored + r.counts.scored,
-      advancing: acc.advancing + r.counts.advanced,
-      interviewing: acc.interviewing + r.counts.interview_in_progress,
-      completed: acc.completed + r.counts.interview_completed,
-      shortlisted: acc.shortlisted + r.counts.shortlisted,
-    }),
-    { candidates: 0, scored: 0, advancing: 0, interviewing: 0, completed: 0, shortlisted: 0 },
-  )
+  // One page of recruitments — drives the funnel chart and the list below.
+  const { data, isLoading } = useQuery({
+    queryKey: ['recruitments', 'list', page],
+    queryFn: () => listRecruitments({ page }),
+    placeholderData: keepPreviousData,
+    refetchInterval: 10000,
+  })
+
+  const recruitments = data?.items
+  const pageSize = data?.page_size ?? 12
+  const pageCount = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize))
+  const recruitmentsTotal = stats?.recruitments_total ?? 0
+
+  const totals = {
+    candidates: stats?.candidates ?? 0,
+    scored: stats?.scored ?? 0,
+    interviewing: stats?.interviewing ?? 0,
+    completed: stats?.completed ?? 0,
+    shortlisted: stats?.shortlisted ?? 0,
+  }
 
   const chartData = (recruitments ?? [])
     .filter((r) => r.counts.total_candidates > 0)
@@ -61,7 +75,7 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {!isLoading && recruitments?.length === 0 ? (
+      {!isLoading && recruitmentsTotal === 0 ? (
         <Card>
           <CardHeader>
             <CardTitle>Get started</CardTitle>
@@ -80,7 +94,7 @@ export default function Dashboard() {
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <StatTile label="Recruitments" value={recruitments?.length ?? 0} />
+            <StatTile label="Recruitments" value={recruitmentsTotal} />
             <StatTile label="Candidates" value={totals.candidates} />
             <StatTile label="Scored" value={totals.scored} />
             <StatTile label="Interviewing now" value={totals.interviewing} tone={totals.interviewing > 0 ? 'active' : undefined} />
@@ -154,6 +168,14 @@ export default function Dashboard() {
                   </Link>
                 ))}
               </div>
+              {pageCount > 1 && (
+                <Pagination
+                  page={page}
+                  pageCount={pageCount}
+                  onPageChange={setPage}
+                  className="flex items-center justify-between border-t border-border px-6 py-3"
+                />
+              )}
             </CardContent>
           </Card>
         </>
