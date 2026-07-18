@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     # --- Recruiter portal ---
     candidates_page_size: int = 20  # not-shortlisted candidates listed per page
     recruitments_page_size: int = 12  # recruitments listed per page (list + dashboard)
+    # Coalescing window (seconds) for the dashboard's global stat tiles: within it, repeated polls are
+    # served from memory with no DB work. Past it, a cheap change-check runs and the full aggregate
+    # is recomputed ONLY if candidate data changed — so an idle dashboard never re-scans on a timer.
+    # 0 disables the coalescing window (still change-gated, so no needless rescans). Lower = fresher.
+    analytics_cache_seconds: int = 15
+    # How long (seconds) the page-scoped chart analytics (funnel bar + pipeline pie) are cached
+    # server-side. Charts are computed for the recruitments on the current page and reused for this
+    # long; the next request after it expires recomputes them. Default 1 hour.
+    analytics_charts_cache_seconds: int = 3600
 
     # --- Interview behavior ---
     interview_duration_minutes: int = 25

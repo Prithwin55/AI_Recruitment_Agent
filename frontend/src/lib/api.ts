@@ -107,6 +107,31 @@ export interface RecruitmentStats {
   shortlisted: number
 }
 
+export interface FunnelBar {
+  title: string
+  advancing: number
+  completed: number
+  shortlisted: number
+}
+
+export interface PipelineBreakdown {
+  shortlisted: number
+  interviewed: number
+  advancing: number
+  rejected: number
+  screening: number
+  failed: number
+}
+
+export interface PageAnalytics {
+  page: number
+  page_size: number
+  total: number
+  candidates: number
+  funnel: FunnelBar[] // per-recruitment, for the bar chart (this page only)
+  pipeline: PipelineBreakdown // mutually-exclusive buckets, for the pie (this page only)
+}
+
 export async function listRecruitments(
   opts: { page?: number; pageSize?: number } = {},
 ): Promise<PaginatedRecruitments> {
@@ -122,6 +147,15 @@ export async function listRecruitments(
 
 export async function getRecruitmentStats(): Promise<RecruitmentStats> {
   const { data } = await api.get<RecruitmentStats>('/recruitments/stats')
+  return data
+}
+
+export async function getPageAnalytics(
+  opts: { page?: number; pageSize?: number } = {},
+): Promise<PageAnalytics> {
+  const { data } = await api.get<PageAnalytics>('/recruitments/analytics', {
+    params: { page: opts.page ?? 1, page_size: opts.pageSize },
+  })
   return data
 }
 

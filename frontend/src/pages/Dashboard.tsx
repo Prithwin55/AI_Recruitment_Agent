@@ -6,13 +6,16 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Legend,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
-import { getRecruitmentStats, listRecruitments } from '@/lib/api'
+import { getPageAnalytics, getRecruitmentStats, listRecruitments } from '@/lib/api'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { buttonVariants } from '@/components/ui/button'
 import { Pagination } from '@/components/Pagination'
@@ -25,19 +28,32 @@ function truncate(text: string, max: number): string {
 export default function Dashboard() {
   const [page, setPage] = useState(1)
 
-  // Aggregate totals across ALL recruitments — independent of the current list page.
+  // Aggregate totals across ALL recruitments — independent of the current list page. Polled on a
+  // relaxed cadence and marked stale-after to match the server's TTL cache, so the dashboard stays
+  // fresh without hammering the DB.
   const { data: stats } = useQuery({
     queryKey: ['recruitments', 'stats'],
     queryFn: getRecruitmentStats,
-    refetchInterval: 10000,
+    refetchInterval: 20000,
+    staleTime: 15000,
   })
 
-  // One page of recruitments — drives the funnel chart and the list below.
+  // One page of recruitments — the live list at the bottom.
   const { data, isLoading } = useQuery({
     queryKey: ['recruitments', 'list', page],
     queryFn: () => listRecruitments({ page }),
     placeholderData: keepPreviousData,
     refetchInterval: 10000,
+  })
+
+  // Chart analytics for the SAME page — computed server-side over just this page's recruitments and
+  // cached there for a long window (default 1h). We fetch on entry/page-change and don't poll, so
+  // the charts are recomputed only when the server-side window has lapsed.
+  const { data: analytics } = useQuery({
+    queryKey: ['recruitments', 'analytics', page],
+    queryFn: () => getPageAnalytics({ page }),
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
   })
 
   const recruitments = data?.items
@@ -53,14 +69,32 @@ export default function Dashboard() {
     shortlisted: stats?.shortlisted ?? 0,
   }
 
-  const chartData = (recruitments ?? [])
-    .filter((r) => r.counts.total_candidates > 0)
-    .map((r) => ({
-      title: truncate(r.title, 18),
-      Advancing: r.counts.advanced,
-      Completed: r.counts.interview_completed,
-      Shortlisted: r.counts.shortlisted,
-    }))
+  // Bar-chart data — per-recruitment funnel for this page (from the cached analytics endpoint).
+  const chartData = (analytics?.funnel ?? []).map((f) => ({
+    title: truncate(f.title, 18),
+    Advancing: f.advancing,
+    Completed: f.completed,
+    Shortlisted: f.shortlisted,
+  }))
+
+  // Mutually-exclusive candidate pipeline distribution for this page — every candidate is in exactly
+  // one slice, so it's a valid pie. Semantic, theme-aware colors; zero-count slices are dropped.
+  const PIPELINE_SLICES = [
+    { key: 'shortlisted', name: 'Shortlisted', color: 'var(--success)' },
+    { key: 'advancing', name: 'In interview process', color: 'var(--chart-series-1)' },
+    { key: 'interviewed', name: 'Interviewed — not shortlisted', color: 'var(--warning)' },
+    { key: 'screening', name: 'In screening', color: 'var(--chart-series-3)' },
+    { key: 'rejected', name: 'Not advanced', color: 'var(--destructive)' },
+    { key: 'failed', name: 'Failed', color: 'var(--muted-foreground)' },
+  ] as const
+  const pieData = analytics
+    ? PIPELINE_SLICES.map((s) => ({
+        name: s.name,
+        value: analytics.pipeline[s.key],
+        color: s.color,
+      })).filter((d) => d.value > 0)
+    : []
+  const pieTotal = pieData.reduce((sum, d) => sum + d.value, 0)
 
   return (
     <div className="flex flex-col gap-6">
@@ -106,7 +140,9 @@ export default function Dashboard() {
             <Card>
               <CardHeader>
                 <CardTitle>Candidate funnel by recruitment</CardTitle>
-                <CardDescription>Candidates advanced to interview, interviews completed, and final shortlist — per role.</CardDescription>
+                <CardDescription>
+                  Advanced, completed, and shortlisted per role — for the recruitments on this page.
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="viz-root h-80 w-full">
@@ -141,6 +177,75 @@ export default function Dashboard() {
                       <Bar dataKey="Shortlisted" fill="var(--chart-series-3)" radius={[4, 4, 0, 0]} maxBarSize={36} />
                     </BarChart>
                   </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {pieData.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Candidate pipeline</CardTitle>
+                <CardDescription>
+                  Where {pieTotal} candidate{pieTotal === 1 ? '' : 's'} on this page currently sit —
+                  each counted once.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid items-center gap-6 md:grid-cols-2">
+                  <div className="viz-root h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={pieData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={58}
+                          outerRadius={92}
+                          paddingAngle={2}
+                          stroke="var(--color-card)"
+                          strokeWidth={2}
+                        >
+                          {pieData.map((d) => (
+                            <Cell key={d.name} fill={d.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          contentStyle={{
+                            background: 'var(--color-card)',
+                            border: '1px solid var(--color-border)',
+                            borderRadius: 8,
+                            fontSize: 13,
+                          }}
+                          formatter={(value: number) => [
+                            `${value} (${Math.round((value / pieTotal) * 100)}%)`,
+                            'Candidates',
+                          ]}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Legend + values doubles as the accessible table view of the same data. */}
+                  <ul className="flex flex-col gap-2 text-sm">
+                    {pieData.map((d) => (
+                      <li key={d.name} className="flex items-center justify-between gap-3">
+                        <span className="flex items-center gap-2 text-foreground">
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                            style={{ background: d.color }}
+                            aria-hidden
+                          />
+                          {d.name}
+                        </span>
+                        <span className="tabular-nums text-muted-foreground">
+                          {d.value} · {Math.round((d.value / pieTotal) * 100)}%
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               </CardContent>
             </Card>

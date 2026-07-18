@@ -122,8 +122,30 @@ def _run_lightweight_migrations() -> None:
                     conn.rollback()
 
 
+def _create_analytics_indexes() -> None:
+    """Composite covering indexes for the dashboard aggregates. They let SQLite answer the
+    stats GROUP BY / per-recruitment count queries with index-only scans instead of walking the
+    whole candidates table. IF NOT EXISTS so this is idempotent and applies to existing DBs too."""
+    statements = (
+        # Global stats: GROUP BY over the whole table.
+        'CREATE INDEX IF NOT EXISTS "ix_candidates_stats" '
+        'ON "candidates" ("processing_status", "phase1_decision", "phase2_status")',
+        # Per-recruitment page counts: narrowed by recruitment_id, then grouped by the same dims.
+        'CREATE INDEX IF NOT EXISTS "ix_candidates_recr_stats" '
+        'ON "candidates" ("recruitment_id", "processing_status", "phase1_decision", "phase2_status")',
+    )
+    with engine.connect() as conn:
+        for ddl in statements:
+            try:
+                conn.exec_driver_sql(ddl)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
+
 def init_db() -> None:
     from . import models  # noqa: F401  (ensure models are registered on Base)
 
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()
+    _create_analytics_indexes()
