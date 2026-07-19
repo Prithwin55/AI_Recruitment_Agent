@@ -140,18 +140,25 @@ const DEFAULT_START = toISODate(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000))
 function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
   const [start, setStart] = useState(DEFAULT_START)
   const [end, setEnd] = useState(DEFAULT_END)
+  // '' = all organizations; otherwise a specific tenant id. Applied immediately (a single select).
+  const [tenantId, setTenantId] = useState('')
   // Dates actually applied to the query (typing a date shouldn't refetch per keystroke).
   const [applied, setApplied] = useState<{ start: string; end: string }>({
     start: DEFAULT_START,
     end: DEFAULT_END,
   })
 
+  // Organizations for the usage scope selector (shares the cache with the Organizations panel).
+  const { data: tenants } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: listTenants })
+
   const { data: report, isLoading, isError, error } = useQuery({
-    queryKey: ['admin', 'usage', applied.start, applied.end],
-    queryFn: () => getAdminUsage({ start: applied.start, end: applied.end }),
+    queryKey: ['admin', 'usage', applied.start, applied.end, tenantId],
+    queryFn: () => getAdminUsage({ start: applied.start, end: applied.end, tenantId: tenantId || undefined }),
     retry: false,
   })
 
+  const selectedTenant = tenants?.find((t) => t.id === tenantId)
+  const scopeLabel = selectedTenant ? selectedTenant.name : 'All organizations'
   const isDefaultRange = applied.start === DEFAULT_START && applied.end === DEFAULT_END
   const periodLabel = isDefaultRange
     ? '· last 30 days'
@@ -196,10 +203,10 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
         <h2 className="text-sm font-medium text-muted-foreground">Usage &amp; cost</h2>
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Filter by date</CardTitle>
+            <CardTitle className="text-base">Filter</CardTitle>
             <CardDescription>
-              Showing the last 30 days by default. Pick any range — the end date is inclusive — and
-              cost is recalculated for that window. Leave both empty to see all-time usage.
+              Scope to one organization or all of them, over any date range (end date inclusive).
+              Showing the last 30 days by default; leave both dates empty for all-time.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -210,6 +217,22 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
                 setApplied({ start, end })
               }}
             >
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="org">Organization</Label>
+                <select
+                  id="org"
+                  value={tenantId}
+                  onChange={(e) => setTenantId(e.target.value)}
+                  className="h-10 w-56 rounded-md border border-input bg-background px-3 text-sm text-foreground [&_option]:bg-background [&_option]:text-foreground"
+                >
+                  <option value="">All organizations</option>
+                  {(tenants ?? []).map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="start">From</Label>
                 <Input
@@ -272,9 +295,10 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
           <>
             <Card>
               <CardContent className="flex flex-wrap items-baseline justify-between gap-2 pt-6">
-                <span className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                <span className="flex flex-wrap items-center gap-x-2 text-sm font-medium text-muted-foreground">
                   <IndianRupee className="h-4 w-4" />
-                  Total cost <span className="text-xs">{periodLabel}</span>
+                  Total cost — <span className="text-foreground">{scopeLabel}</span>
+                  <span className="text-xs">{periodLabel}</span>
                 </span>
                 <span className="text-3xl font-semibold tabular-nums text-foreground">
                   {inr.format(report.total_cost_inr)}
