@@ -58,8 +58,8 @@ function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
       const status = (err as { response?: { status?: number } })?.response?.status
       setError(
         status === 403
-          ? 'The admin panel is disabled — set ADMIN_PASSWORD in the environment to enable it.'
-          : 'Invalid admin credentials.',
+          ? 'The admin panel is not enabled. Contact your system administrator.'
+          : 'Invalid username or password.',
       )
     } finally {
       setSubmitting(false)
@@ -74,11 +74,7 @@ function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
             <ShieldCheck className="h-5 w-5 text-primary" />
             <CardTitle className="text-xl">Admin panel</CardTitle>
           </div>
-          <CardDescription>
-            System usage &amp; cost monitoring. Credentials come from{' '}
-            <code className="text-xs">ADMIN_USERNAME</code> /{' '}
-            <code className="text-xs">ADMIN_PASSWORD</code> in the server environment.
-          </CardDescription>
+          <CardDescription>Sign in to view system usage and cost.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -114,17 +110,37 @@ function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
   )
 }
 
+function toISODate(d: Date): string {
+  // Local calendar date as YYYY-MM-DD (avoids the UTC shift of toISOString()).
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Default window: the last 30 days (inclusive of today) — scanning all-time on every login is
+// needlessly heavy, and recent spend is what an admin checks first.
+const DEFAULT_END = toISODate(new Date())
+const DEFAULT_START = toISODate(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000))
+
 function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
-  const [start, setStart] = useState('')
-  const [end, setEnd] = useState('')
+  const [start, setStart] = useState(DEFAULT_START)
+  const [end, setEnd] = useState(DEFAULT_END)
   // Dates actually applied to the query (typing a date shouldn't refetch per keystroke).
-  const [applied, setApplied] = useState<{ start: string; end: string }>({ start: '', end: '' })
+  const [applied, setApplied] = useState<{ start: string; end: string }>({
+    start: DEFAULT_START,
+    end: DEFAULT_END,
+  })
 
   const { data: report, isLoading, isError, error } = useQuery({
     queryKey: ['admin', 'usage', applied.start, applied.end],
     queryFn: () => getAdminUsage({ start: applied.start, end: applied.end }),
     retry: false,
   })
+
+  const isDefaultRange = applied.start === DEFAULT_START && applied.end === DEFAULT_END
+  const periodLabel = isDefaultRange
+    ? '· last 30 days'
+    : applied.start || applied.end
+      ? '· selected period'
+      : '· all time'
 
   // Expired admin token → drop back to the login form (axios interceptor already cleared storage).
   useEffect(() => {
@@ -138,7 +154,6 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
   const tts = byService.get('tts')
   const ocr = byService.get('ocr')
   const pricing = report?.pricing
-  const periodLabel = applied.start || applied.end ? 'for the selected period' : '(all time)'
 
   return (
     <div className="min-h-svh bg-muted/30">
@@ -163,8 +178,8 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
           <CardHeader>
             <CardTitle className="text-base">Filter by date</CardTitle>
             <CardDescription>
-              Leave both empty for all-time usage. The end date is inclusive. Costs are recalculated
-              for the filtered window using the current env rates.
+              Showing the last 30 days by default. Pick any range — the end date is inclusive — and
+              cost is recalculated for that window. Leave both empty to see all-time usage.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -196,6 +211,19 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
                 />
               </div>
               <Button type="submit">Apply</Button>
+              {!isDefaultRange && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setStart(DEFAULT_START)
+                    setEnd(DEFAULT_END)
+                    setApplied({ start: DEFAULT_START, end: DEFAULT_END })
+                  }}
+                >
+                  Last 30 days
+                </Button>
+              )}
               {(applied.start || applied.end) && (
                 <Button
                   type="button"
@@ -206,7 +234,7 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
                     setApplied({ start: '', end: '' })
                   }}
                 >
-                  Clear — all time
+                  All time
                 </Button>
               )}
             </form>
@@ -226,7 +254,7 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
               <CardContent className="flex flex-wrap items-baseline justify-between gap-2 pt-6">
                 <span className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                   <IndianRupee className="h-4 w-4" />
-                  Total cost {periodLabel}
+                  Total cost <span className="text-xs">{periodLabel}</span>
                 </span>
                 <span className="text-3xl font-semibold tabular-nums text-foreground">
                   {inr.format(report.total_cost_inr)}
@@ -244,12 +272,12 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
 
             <div>
               <h2 className="mb-3 text-sm font-medium text-muted-foreground">
-                Usage &amp; cost by service {periodLabel}
+                Usage &amp; cost by service <span className="text-xs">{periodLabel}</span>
               </h2>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <ServiceCard
                   icon={<Bot className="h-4 w-4" />}
-                  title="AI agent (Claude)"
+                  title="AI agent"
                   cost={llm?.cost_inr ?? 0}
                   rows={[
                     ['Input tokens', num.format(llm?.input_tokens ?? 0)],
@@ -302,10 +330,8 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
             {pricing && <PricingReference pricing={pricing} />}
 
             <p className="text-xs text-muted-foreground">
-              Rates are configured in the server environment (<code>PRICE_INR_*</code>) and applied
-              at read time — changing a rate re-prices the whole history. Usage is recorded as
-              interviews and resume scoring run; an empty dashboard means nothing has been metered
-              yet for this period.
+              Usage is recorded as interviews and resume screening run. If a period looks empty,
+              nothing was billable in that window yet.
             </p>
           </>
         )}
@@ -369,14 +395,18 @@ function ServiceCard({
 }
 
 function PricingReference({ pricing }: { pricing: UsagePricing }) {
+  const rows: [string, string][] = [
+    ['AI agent — input', `₹${pricing.llm_per_mtok_input} / 1M tokens`],
+    ['AI agent — output', `₹${pricing.llm_per_mtok_output} / 1M tokens`],
+    ['Speech to text', `₹${pricing.stt_per_minute} / minute`],
+    ['Text to speech', `₹${pricing.tts_per_1k_chars} / 1,000 characters`],
+    ['Resume parser (OCR)', `₹${pricing.ocr_per_1k_pages} / 1,000 pages`],
+  ]
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Active pricing (from env)</CardTitle>
-        <CardDescription>
-          USD reference rates converted at ₹86/$ into the <code>PRICE_INR_*</code> env vars. Edit
-          those to re-price history.
-        </CardDescription>
+        <CardTitle className="text-base">Rate card</CardTitle>
+        <CardDescription>The rates every cost above is calculated from.</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
@@ -384,36 +414,16 @@ function PricingReference({ pricing }: { pricing: UsagePricing }) {
             <thead>
               <tr className="border-b border-border text-muted-foreground">
                 <th className="pb-2 pr-4 font-medium">Service</th>
-                <th className="pb-2 pr-4 font-medium">USD reference</th>
-                <th className="pb-2 font-medium">Active rate (₹)</th>
+                <th className="pb-2 font-medium">Rate</th>
               </tr>
             </thead>
             <tbody className="tabular-nums">
-              <tr className="border-b border-border/60">
-                <td className="py-2 pr-4">AI agent — input</td>
-                <td className="py-2 pr-4">$3 / 1M tokens</td>
-                <td className="py-2">₹{pricing.llm_per_mtok_input} / 1M tokens</td>
-              </tr>
-              <tr className="border-b border-border/60">
-                <td className="py-2 pr-4">AI agent — output</td>
-                <td className="py-2 pr-4">$15 / 1M tokens</td>
-                <td className="py-2">₹{pricing.llm_per_mtok_output} / 1M tokens</td>
-              </tr>
-              <tr className="border-b border-border/60">
-                <td className="py-2 pr-4">STT</td>
-                <td className="py-2 pr-4">$0.0154 / min</td>
-                <td className="py-2">₹{pricing.stt_per_minute} / min</td>
-              </tr>
-              <tr className="border-b border-border/60">
-                <td className="py-2 pr-4">TTS</td>
-                <td className="py-2 pr-4">$0.10 / 1,000 chars</td>
-                <td className="py-2">₹{pricing.tts_per_1k_chars} / 1,000 chars</td>
-              </tr>
-              <tr>
-                <td className="py-2 pr-4">OCR</td>
-                <td className="py-2 pr-4">$1.50 / 1,000 pages</td>
-                <td className="py-2">₹{pricing.ocr_per_1k_pages} / 1,000 pages</td>
-              </tr>
+              {rows.map(([service, rate], i) => (
+                <tr key={service} className={i < rows.length - 1 ? 'border-b border-border/60' : ''}>
+                  <td className="py-2 pr-4">{service}</td>
+                  <td className="py-2">{rate}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

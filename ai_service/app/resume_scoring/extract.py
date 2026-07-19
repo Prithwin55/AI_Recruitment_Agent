@@ -21,19 +21,28 @@ class ResumeContent:
 
     extraction_method: str  # "text" | "vision"
     content_blocks: list[dict]  # Claude message content blocks to include after the prompt text
-    # Pages processed by the vision (OCR) path — PDF page count, 1 for an image, 0 for the plain
-    # text path. Feeds the admin usage/cost dashboard's OCR metering.
-    pages: int = 0
+    # Pages the resume parser processed — always >= 1 (every resume is one parse). PDFs use the real
+    # page count; images and text documents count as at least one page (text docs are estimated from
+    # their length). Feeds the admin usage/cost dashboard's resume-parser metering.
+    pages: int = 1
+
+
+_CHARS_PER_PAGE = 2800  # rough single-page character budget for estimating text-document pages
 
 
 def _pdf_page_count(path: Path) -> int:
-    """Best-effort page count for OCR metering — a broken/encrypted PDF still bills as 1 page."""
+    """Best-effort page count for metering — a broken/encrypted PDF still bills as 1 page."""
     try:
         from pypdf import PdfReader
 
         return max(1, len(PdfReader(str(path)).pages))
     except Exception:  # noqa: BLE001
         return 1
+
+
+def _estimate_text_pages(text: str) -> int:
+    """A text document has no rendered page count, so estimate one from its length (min 1)."""
+    return max(1, round(len(text) / _CHARS_PER_PAGE))
 
 
 def build_resume_content(stored_path: str) -> ResumeContent:
@@ -76,6 +85,7 @@ def build_resume_content(stored_path: str) -> ResumeContent:
         return ResumeContent(
             extraction_method="text",
             content_blocks=[{"type": "text", "text": f"Resume text:\n\n{text}"}],
+            pages=_estimate_text_pages(text),
         )
 
     if extension == ".doc":

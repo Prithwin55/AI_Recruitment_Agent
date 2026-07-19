@@ -85,15 +85,15 @@ async def score_resume(jd_text: str, resume: ResumeContent, context: str | None 
         ],
     )
 
-    # Meter this call: LLM tokens always; OCR pages only when the vision path parsed the file.
+    # Meter this call: LLM tokens for the Claude scoring, and the resume-parser (OCR) pages for the
+    # parse itself — every resume is parsed (text or vision), so this always records at least 1 page.
     await record_usage_async(
         UsageService.LLM,
         input_tokens=response.usage.input_tokens,
         output_tokens=response.usage.output_tokens,
         context=context,
     )
-    if resume.extraction_method == "vision" and resume.pages > 0:
-        await record_usage_async(UsageService.OCR, pages=resume.pages, context=context)
+    await record_usage_async(UsageService.OCR, pages=max(1, resume.pages), context=context)
 
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)
     if tool_use is None:

@@ -6,6 +6,7 @@ import { InterviewSocket, type ServerMessage } from '@/lib/interview/interviewSo
 import { startMicCapture, type MicCapture } from '@/lib/interview/micCapture'
 import { PocketTts, BrowserTts, type AgentVoice } from '@/lib/interview/pocketTts'
 import { Button } from '@/components/ui/button'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import { AgentOrb, type OrbState } from './AgentOrb'
 
 interface TranscriptEntry {
@@ -311,14 +312,17 @@ export default function MeetingRoom({
   }
 
   return (
-    <div className="flex min-h-svh flex-col bg-slate-950 text-slate-100">
-      <header className="flex items-center justify-between border-b border-white/10 px-6 py-3">
+    <div className="flex min-h-svh flex-col bg-background text-foreground">
+      <header className="flex items-center justify-between border-b border-border px-6 py-3">
         <div className="flex items-center gap-2 text-sm font-medium">
           <Sparkles className="h-4 w-4 text-primary" />
           AI Interview
         </div>
-        <div className="rounded-full bg-white/10 px-3 py-1 text-sm tabular-nums">
-          {formatClock(elapsed)} / {formatClock(elapsed + remaining)}
+        <div className="flex items-center gap-3">
+          <div className="rounded-full bg-muted px-3 py-1 text-sm tabular-nums text-foreground">
+            {formatClock(elapsed)} / {formatClock(elapsed + remaining)}
+          </div>
+          <ThemeToggle />
         </div>
       </header>
 
@@ -332,12 +336,12 @@ export default function MeetingRoom({
               </div>
               <ul className="no-scrollbar max-h-[55vh] space-y-1.5 overflow-y-auto">
                 {integrityFlags.map((f, i) => (
-                  <li key={i} className="rounded-md bg-black/30 px-2.5 py-1.5 text-xs">
+                  <li key={i} className="rounded-md bg-background/60 px-2.5 py-1.5 text-xs">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-medium text-warning">{flagLabel(f.kind)}</span>
-                      <span className="tabular-nums text-slate-400">{f.at}</span>
+                      <span className="tabular-nums text-muted-foreground">{f.at}</span>
                     </div>
-                    <p className="mt-0.5 text-slate-300">{f.detail}</p>
+                    <p className="mt-0.5 text-muted-foreground">{f.detail}</p>
                   </li>
                 ))}
               </ul>
@@ -354,7 +358,7 @@ export default function MeetingRoom({
               micAnalyser={micRef.current?.analyser ?? null}
               agentAnalyser={ttsRef.current?.analyser ?? playerRef.current?.analyser ?? null}
             />
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-muted-foreground">
               {!ready
                 ? 'Connecting…'
                 : ttsLoading
@@ -372,13 +376,23 @@ export default function MeetingRoom({
 
             <div
               ref={transcriptRef}
-              className="no-scrollbar w-full max-w-xl space-y-2 overflow-y-auto rounded-lg bg-white/5 p-4 text-sm"
+              className="no-scrollbar w-full max-w-xl space-y-2 overflow-y-auto rounded-lg border border-border bg-muted/50 p-4 text-sm"
               style={{ maxHeight: '30vh' }}
             >
-              {transcript.length === 0 && <p className="text-slate-500">Live captions will appear here…</p>}
+              {transcript.length === 0 && (
+                <p className="text-muted-foreground">Live captions will appear here…</p>
+              )}
               {transcript.map((entry, i) => (
-                <p key={i} className={entry.speaker === 'agent' ? 'text-primary-foreground' : 'text-slate-300'}>
-                  <span className="font-medium">{entry.speaker === 'agent' ? 'Interviewer: ' : 'You: '}</span>
+                <p key={i} className="text-foreground">
+                  <span
+                    className={
+                      entry.speaker === 'agent'
+                        ? 'font-medium text-primary'
+                        : 'font-medium text-muted-foreground'
+                    }
+                  >
+                    {entry.speaker === 'agent' ? 'Interviewer: ' : 'You: '}
+                  </span>
                   <span className={entry.partial ? 'opacity-60' : ''}>{entry.text}</span>
                 </p>
               ))}
@@ -387,7 +401,7 @@ export default function MeetingRoom({
         )}
       </main>
 
-      <footer className="flex items-center justify-center gap-4 border-t border-white/10 px-6 py-4">
+      <footer className="flex items-center justify-center gap-4 border-t border-border px-6 py-4">
         <video ref={videoRef} autoPlay muted playsInline className="h-16 w-24 rounded-md object-cover" />
         <Button variant={muted ? 'destructive' : 'outline'} size="icon" onClick={toggleMute} className="rounded-full">
           {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
