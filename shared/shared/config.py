@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -5,10 +6,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Each service loads its OWN env file: backend/main.py and ai_service/main.py set APP_ENV_FILE to
+# their folder's .env before importing this module. Falls back to the repo-root .env so the old
+# single-file / `uvicorn --app-dir` workflow keeps working.
+_ENV_FILE = os.environ.get("APP_ENV_FILE", str(REPO_ROOT / ".env"))
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(REPO_ROOT / ".env"),
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
