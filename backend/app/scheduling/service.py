@@ -9,6 +9,7 @@ from shared.models import (
     InterviewSession,
     Phase2Status,
     Recruitment,
+    Tenant,
     TokenStatus,
 )
 from shared.security import generate_interview_token
@@ -37,8 +38,11 @@ async def schedule_candidate(candidate_id: str) -> tuple[bool, str]:
             return False, "Already scheduled"
         name = candidate.name
         email = candidate.email
+        tenant_id = candidate.tenant_id
         recruitment = db.get(Recruitment, candidate.recruitment_id)
         role_title = recruitment.title if recruitment else ""
+        tenant = db.get(Tenant, tenant_id) if tenant_id else None
+        tenant_slug = tenant.slug if tenant else None
 
     if not email:
         return False, "No email address on file"
@@ -49,6 +53,7 @@ async def schedule_candidate(candidate_id: str) -> tuple[bool, str]:
 
     with session_scope() as db:
         interview_session = InterviewSession(
+            tenant_id=tenant_id,
             candidate_id=candidate_id,
             token=token,
             token_status=TokenStatus.PENDING,
@@ -61,7 +66,10 @@ async def schedule_candidate(candidate_id: str) -> tuple[bool, str]:
         db.flush()
         session_id = interview_session.id
 
-    join_url = f"{settings.frontend_base_url}/interview/{token}"
+    # Candidate link lives on the tenant's own subdomain; fall back to the single-host base URL
+    # when there's no tenant slug (e.g. legacy default tenant in single-host dev).
+    base_url = settings.tenant_frontend_base_url(tenant_slug) if tenant_slug else settings.frontend_base_url
+    join_url = f"{base_url}/interview/{token}"
 
     try:
         await send_interview_email(email, name, role_title, join_url, settings.interview_link_validity_days)

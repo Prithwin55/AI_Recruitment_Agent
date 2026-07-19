@@ -2,7 +2,18 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -14,6 +25,17 @@ def _utcnow() -> datetime:
 
 def _uuid() -> str:
     return uuid.uuid4().hex
+
+
+class TenantStatus(str, enum.Enum):
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+
+
+class UserRole(str, enum.Enum):
+    # Legacy label kept for existing DB rows; no extra powers — all workspace users are recruiters.
+    TENANT_ADMIN = "tenant_admin"
+    RECRUITER = "recruiter"
 
 
 class RecruitmentStatus(str, enum.Enum):
@@ -90,12 +112,34 @@ def _str_enum(python_enum, **kw):
     return Enum(python_enum, native_enum=False, validate_strings=True, **kw)
 
 
-class User(Base):
-    __tablename__ = "users"
+class Tenant(Base):
+    """One customer organization. Reached at {slug}.<root_domain>; owns all of its users and data.
+    Row-level isolation: every tenant-scoped table carries a denormalized tenant_id."""
+
+    __tablename__ = "tenants"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # Subdomain label — DNS-safe, lowercase, <= 63 chars. Validated at provisioning time.
+    slug: Mapped[str] = mapped_column(String(63), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    status: Mapped[TenantStatus] = mapped_column(_str_enum(TenantStatus), default=TenantStatus.ACTIVE)
+    # Branding (all optional) shown on the tenant's login + workspace chrome.
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    logo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    primary_color: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+    # Email is unique PER TENANT, not globally, so the same person can exist in multiple tenants.
+    __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[UserRole] = mapped_column(_str_enum(UserRole), default=UserRole.RECRUITER)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
@@ -106,6 +150,7 @@ class Recruitment(Base):
     __tablename__ = "recruitments"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     jd_text: Mapped[str] = mapped_column(Text)
     status: Mapped[RecruitmentStatus] = mapped_column(
@@ -124,6 +169,7 @@ class Candidate(Base):
     __tablename__ = "candidates"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     recruitment_id: Mapped[str] = mapped_column(ForeignKey("recruitments.id"), index=True)
 
     original_filename: Mapped[str] = mapped_column(String(500))
@@ -176,6 +222,7 @@ class InterviewSession(Base):
     __tablename__ = "interview_sessions"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     candidate_id: Mapped[str] = mapped_column(ForeignKey("candidates.id"), index=True)
 
     token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -294,6 +341,8 @@ class UsageEvent(Base):
     __tablename__ = "usage_events"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    # Nullable: metering is fail-soft and must never break even if a tenant can't be resolved.
+    tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
     service: Mapped[UsageService] = mapped_column(_str_enum(UsageService), index=True)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)

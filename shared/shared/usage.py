@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 def record_usage(
     service: UsageService,
     *,
+    tenant_id: str | None = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
     seconds: float = 0.0,
@@ -24,13 +25,15 @@ def record_usage(
     pages: int = 0,
     context: str | None = None,
 ) -> None:
-    """Synchronous insert of one usage row. Swallows (but logs) every failure."""
+    """Synchronous insert of one usage row. Swallows (but logs) every failure. tenant_id is
+    nullable — metering is fail-soft and must never break just because a tenant can't be resolved."""
     if not (input_tokens or output_tokens or seconds or characters or pages):
         return  # nothing consumed — don't write empty rows
     try:
         with session_scope() as db:
             db.add(
                 UsageEvent(
+                    tenant_id=tenant_id,
                     service=service,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,

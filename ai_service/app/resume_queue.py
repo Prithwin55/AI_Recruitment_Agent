@@ -41,12 +41,15 @@ async def _process_candidate(candidate_id: str) -> None:
         if candidate is None:
             return
         stored_path = candidate.stored_path
+        tenant_id = candidate.tenant_id
         recruitment = db.get(Recruitment, candidate.recruitment_id)
         jd_text = recruitment.jd_text if recruitment else ""
 
     try:
         resume_content = build_resume_content(stored_path)
-        result = await score_resume(jd_text, resume_content, context=f"resume:{candidate_id}")
+        result = await score_resume(
+            jd_text, resume_content, context=f"resume:{candidate_id}", tenant_id=tenant_id
+        )
     except UnsupportedResumeFormat as exc:
         _mark_failed(candidate_id, str(exc))
         return

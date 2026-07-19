@@ -32,7 +32,7 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
-async def analyze_sentiment(text: str) -> SentimentResult:
+async def analyze_sentiment(text: str, tenant_id: str | None = None) -> SentimentResult:
     settings = get_settings()
     client = _get_client()
 
@@ -50,6 +50,7 @@ async def analyze_sentiment(text: str) -> SentimentResult:
 
     await record_usage_async(
         UsageService.LLM,
+        tenant_id=tenant_id,
         input_tokens=response.usage.input_tokens,
         output_tokens=response.usage.output_tokens,
         context="sentiment",

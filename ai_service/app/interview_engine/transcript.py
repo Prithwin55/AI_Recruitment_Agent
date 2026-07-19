@@ -16,8 +16,9 @@ class TranscriptRecorder:
     TranscriptTurn table. Candidate turns get fire-and-forget sentiment analysis that never
     blocks the live conversation loop."""
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, tenant_id: str | None = None) -> None:
         self.session_id = session_id
+        self.tenant_id = tenant_id
         self.path = transcript_path(session_id)
         self._sequence = 0
 
@@ -66,7 +67,7 @@ class TranscriptRecorder:
 
     async def _tag_sentiment(self, turn_row_id: str, text: str) -> None:
         try:
-            result = await analyze_sentiment(text)
+            result = await analyze_sentiment(text, tenant_id=self.tenant_id)
         except Exception:  # noqa: BLE001 — sentiment is best-effort, never fatal
             logger.exception("Sentiment analysis failed for transcript turn %s", turn_row_id)
             return

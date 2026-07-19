@@ -45,12 +45,25 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ''),
+        // changeOrigin rewrites Host to the target (localhost), which would make the backend
+        // resolve every tenant subdomain to the default tenant. Forward the ORIGINAL browser host
+        // so resolve_tenant sees e.g. "acme.localhost" and scopes to that tenant.
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            if (req.headers.host) proxyReq.setHeader('x-forwarded-host', req.headers.host)
+          })
+        },
       },
       '/ai': {
         target: 'http://localhost:8100',
         changeOrigin: true,
         ws: true,
         rewrite: (p) => p.replace(/^\/ai/, ''),
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            if (req.headers.host) proxyReq.setHeader('x-forwarded-host', req.headers.host)
+          })
+        },
       },
     },
   },

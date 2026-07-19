@@ -1,17 +1,34 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Bot, FileScan, IndianRupee, LogOut, Mic, ShieldCheck, Volume2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  Bot,
+  Building2,
+  Copy,
+  FileScan,
+  IndianRupee,
+  LogOut,
+  Mic,
+  Plus,
+  ShieldCheck,
+  Volume2,
+} from 'lucide-react'
 import {
   adminLogin,
+  createTenant,
   getAdminToken,
   getAdminUsage,
+  listTenants,
   setAdminToken,
+  updateTenant,
+  type AdminTenant,
   type ServiceUsage,
   type UsagePricing,
 } from '@/lib/api'
+import { tenantBaseUrl } from '@/lib/tenant'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ThemeToggle } from '@/components/ThemeToggle'
 
@@ -174,6 +191,9 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
       </header>
 
       <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6">
+        <TenantsManager />
+
+        <h2 className="text-sm font-medium text-muted-foreground">Usage &amp; cost</h2>
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Filter by date</CardTitle>
@@ -337,6 +357,215 @@ function AdminDashboard({ onSignOut }: { onSignOut: () => void }) {
         )}
       </main>
     </div>
+  )
+}
+
+function TenantsManager() {
+  const queryClient = useQueryClient()
+  const [slug, setSlug] = useState('')
+  const [name, setName] = useState('')
+  const [recruiterEmail, setRecruiterEmail] = useState('')
+  const [formError, setFormError] = useState<string | null>(null)
+  const [created, setCreated] = useState<{
+    email: string
+    password: string
+    slug: string
+    loginUrl: string
+  } | null>(null)
+  const [showForm, setShowForm] = useState(false)
+
+  const { data: tenants, isLoading } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: listTenants })
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['admin', 'tenants'] })
+
+  const createMut = useMutation({
+    mutationFn: () => createTenant({ slug, name, recruiter_email: recruiterEmail }),
+    onSuccess: (res) => {
+      setCreated({
+        email: res.recruiter_email,
+        password: res.temp_password,
+        slug: res.tenant.slug,
+        loginUrl: tenantBaseUrl(res.tenant.slug),
+      })
+      setSlug('')
+      setName('')
+      setRecruiterEmail('')
+      setShowForm(false)
+      setFormError(null)
+      invalidate()
+    },
+    onError: (e: unknown) => {
+      const status = (e as { response?: { status?: number } })?.response?.status
+      setFormError(
+        status === 409
+          ? 'That subdomain is already taken.'
+          : status === 422
+            ? 'Check the subdomain (lowercase letters, digits, hyphens) and email.'
+            : 'Could not create the workspace.',
+      )
+    },
+  })
+
+  const statusMut = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: 'active' | 'suspended' }) =>
+      updateTenant(id, { status }),
+    onSuccess: invalidate,
+  })
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Building2 className="h-4 w-4 text-primary" />
+              Organizations
+            </CardTitle>
+            <CardDescription>
+              Create a workspace and its default recruiter account — they get a clean setup on their
+              subdomain.
+            </CardDescription>
+          </div>
+          <Button size="sm" className="gap-1.5" onClick={() => setShowForm((v) => !v)}>
+            <Plus className="h-4 w-4" />
+            New organization
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {showForm && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              setFormError(null)
+              createMut.mutate()
+            }}
+            className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3"
+          >
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="t-slug">Subdomain</Label>
+              <Input
+                id="t-slug"
+                value={slug}
+                onChange={(e) => setSlug(e.target.value)}
+                placeholder="acme"
+                className="w-40"
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="t-name">Organization name</Label>
+              <Input
+                id="t-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Acme Inc."
+                className="w-48"
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="t-email">Recruiter email</Label>
+              <Input
+                id="t-email"
+                type="email"
+                value={recruiterEmail}
+                onChange={(e) => setRecruiterEmail(e.target.value)}
+                placeholder="recruiter@acme.com"
+                className="w-56"
+                required
+              />
+            </div>
+            <Button type="submit" disabled={createMut.isPending}>
+              {createMut.isPending ? 'Creating…' : 'Create'}
+            </Button>
+            {formError && <p className="w-full text-sm text-destructive">{formError}</p>}
+          </form>
+        )}
+
+        {created && (
+          <div className="rounded-md border border-success/40 bg-success/10 p-3 text-sm">
+            <p className="font-medium text-foreground">
+              Organization <strong>{created.slug}</strong> created — default recruiter: {created.email}
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              Login URL:{' '}
+              <a
+                href={created.loginUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-foreground underline underline-offset-2"
+              >
+                {created.loginUrl}
+              </a>
+            </p>
+            <p className="mt-1 text-muted-foreground">One-time password (won't be shown again):</p>
+            <div className="mt-2 flex items-center gap-2">
+              <code className="rounded bg-background px-2 py-1 font-mono text-foreground">{created.password}</code>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => navigator.clipboard?.writeText(created.password)}
+              >
+                <Copy className="h-3.5 w-3.5" />
+                Copy
+              </Button>
+            </div>
+          </div>
+        )}
+
+
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-border text-muted-foreground">
+                  <th className="pb-2 pr-4 font-medium">Workspace</th>
+                  <th className="pb-2 pr-4 font-medium">Subdomain</th>
+                  <th className="pb-2 pr-4 font-medium tabular-nums">Users</th>
+                  <th className="pb-2 pr-4 font-medium tabular-nums">Recruitments</th>
+                  <th className="pb-2 pr-4 font-medium tabular-nums">Candidates</th>
+                  <th className="pb-2 pr-4 font-medium">Status</th>
+                  <th className="pb-2 font-medium" />
+                </tr>
+              </thead>
+              <tbody>
+                {(tenants ?? []).map((t: AdminTenant) => (
+                  <tr key={t.id} className="border-b border-border/60">
+                    <td className="py-2 pr-4 font-medium text-foreground">{t.name}</td>
+                    <td className="py-2 pr-4 text-muted-foreground">{t.slug}</td>
+                    <td className="py-2 pr-4 tabular-nums">{t.users}</td>
+                    <td className="py-2 pr-4 tabular-nums">{t.recruitments}</td>
+                    <td className="py-2 pr-4 tabular-nums">{t.candidates}</td>
+                    <td className="py-2 pr-4">
+                      <Badge variant={t.status === 'active' ? 'success' : 'destructive'}>{t.status}</Badge>
+                    </td>
+                    <td className="py-2 text-right">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={statusMut.isPending}
+                        onClick={() =>
+                          statusMut.mutate({
+                            id: t.id,
+                            status: t.status === 'active' ? 'suspended' : 'active',
+                          })
+                        }
+                      >
+                        {t.status === 'active' ? 'Suspend' : 'Reactivate'}
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

@@ -32,10 +32,10 @@ from .schemas import (
 router = APIRouter(prefix="/recruitments", tags=["recruitments"])
 
 
-def _build_counts_batch(db, recruitment_ids: list[str]) -> dict[str, RecruitmentCounts]:
+def _build_counts_batch(db, recruitment_ids: list[str], tenant_id: str) -> dict[str, RecruitmentCounts]:
     """Compute per-recruitment counts for a whole set in exactly TWO queries total (never one per
     recruitment): one grouped scan over the candidate dimensions, plus one join for the final
-    shortlist decision. Returns a dict keyed by recruitment id."""
+    shortlist decision. Returns a dict keyed by recruitment id. Scoped to `tenant_id`."""
     counts = {rid: RecruitmentCounts() for rid in recruitment_ids}
     if not recruitment_ids:
         return counts
@@ -52,7 +52,7 @@ def _build_counts_batch(db, recruitment_ids: list[str]) -> dict[str, Recruitment
             Candidate.auto_advanced,
             func.count(),
         )
-        .filter(Candidate.recruitment_id.in_(recruitment_ids))
+        .filter(Candidate.tenant_id == tenant_id, Candidate.recruitment_id.in_(recruitment_ids))
         .group_by(
             Candidate.recruitment_id,
             Candidate.processing_status,
@@ -90,6 +90,7 @@ def _build_counts_batch(db, recruitment_ids: list[str]) -> dict[str, Recruitment
         .join(InterviewSession, InterviewResult.interview_session_id == InterviewSession.id)
         .join(Candidate, InterviewSession.candidate_id == Candidate.id)
         .filter(
+            Candidate.tenant_id == tenant_id,
             Candidate.recruitment_id.in_(recruitment_ids),
             InterviewResult.decision == FinalDecision.SHORTLIST,
         )
@@ -102,7 +103,7 @@ def _build_counts_batch(db, recruitment_ids: list[str]) -> dict[str, Recruitment
 
 
 def _to_out(db, recruitment: Recruitment) -> RecruitmentOut:
-    counts = _build_counts_batch(db, [recruitment.id])[recruitment.id]
+    counts = _build_counts_batch(db, [recruitment.id], recruitment.tenant_id)[recruitment.id]
     return RecruitmentOut(
         id=recruitment.id,
         title=recruitment.title,
@@ -120,6 +121,7 @@ def create_recruitment(
 ) -> RecruitmentOut:
     with session_scope() as db:
         recruitment = Recruitment(
+            tenant_id=current_user.tenant_id,
             title=payload.title,
             jd_text=payload.jd_text,
             created_by=current_user.id,
@@ -139,17 +141,19 @@ def list_recruitments(
     # Page size defaults to the env-configured value; an explicit query param can still override it.
     if page_size is None:
         page_size = max(1, min(get_settings().recruitments_page_size, 100))
+    tid = current_user.tenant_id
     with session_scope() as db:
-        total = db.query(func.count(Recruitment.id)).scalar() or 0
+        total = db.query(func.count(Recruitment.id)).filter(Recruitment.tenant_id == tid).scalar() or 0
         recruitments = (
             db.query(Recruitment)
+            .filter(Recruitment.tenant_id == tid)
             .order_by(Recruitment.created_at.desc(), Recruitment.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
             .all()
         )
         # Batch the per-recruitment counts for this page — constant query count, no N+1.
-        counts_by_id = _build_counts_batch(db, [r.id for r in recruitments])
+        counts_by_id = _build_counts_batch(db, [r.id for r in recruitments], tid)
         items = [
             RecruitmentOut(
                 id=r.id,
@@ -164,34 +168,43 @@ def list_recruitments(
         return PaginatedRecruitments(items=items, total=total, page=page, page_size=page_size)
 
 
-# Cache for the global dashboard stats. Two layers keep it cheap at any scale:
+# Per-tenant cache for the dashboard stats (keyed by tenant_id so one tenant's numbers never leak
+# to another). Two layers keep it cheap at any scale:
 #   1. A short coalescing window (`analytics_cache_seconds`) — within it, repeated polls (many
 #      tabs/users) are served from memory with zero DB work.
 #   2. A change fingerprint — after that window, a couple of near-free indexed lookups decide
 #      whether anything actually changed. The expensive full aggregate re-runs ONLY when it did,
 #      so an idle dashboard never re-scans a million-row table on a timer.
-_stats_cache: dict[str, object] = {"checked_at": 0.0, "fingerprint": None, "value": None}
+_stats_cache: dict[str, dict] = {}  # tenant_id -> {checked_at, fingerprint, value}
 _stats_lock = threading.Lock()
 
 
-def _stats_fingerprint(db) -> str:
-    """A cheap signal that moves whenever the stats could change, without scanning the table:
-    - MAX(candidates.updated_at): moves on every candidate insert/update (updated_at is indexed,
-      so this is an index-tail seek — O(log n), not a scan).
-    - COUNT of interview results that have a final decision: moves when post-interview scoring
-      finalizes a shortlist/reject (which updates InterviewResult, not the candidate row)."""
-    max_updated = db.query(func.max(Candidate.updated_at)).scalar()
+def _stats_fingerprint(db, tenant_id: str) -> str:
+    """A cheap signal that moves whenever the tenant's stats could change, without scanning:
+    - MAX(candidates.updated_at) for the tenant: moves on every candidate insert/update.
+    - COUNT of the tenant's interview results that have a final decision: moves when post-interview
+      scoring finalizes a shortlist/reject (which updates InterviewResult, not the candidate row)."""
+    max_updated = (
+        db.query(func.max(Candidate.updated_at)).filter(Candidate.tenant_id == tenant_id).scalar()
+    )
     decided = (
-        db.query(func.count(InterviewResult.id)).filter(InterviewResult.decision.isnot(None)).scalar() or 0
+        db.query(func.count(InterviewSession.id))
+        .join(InterviewResult, InterviewResult.interview_session_id == InterviewSession.id)
+        .filter(InterviewSession.tenant_id == tenant_id, InterviewResult.decision.isnot(None))
+        .scalar()
+        or 0
     )
     return f"{max_updated}|{decided}"
 
 
-def _compute_stats() -> RecruitmentStats:
+def _compute_stats(tenant_id: str) -> RecruitmentStats:
     """TWO grouped scans (+ one tiny recruitment count) derive every tile and every mutually-
-    exclusive pipeline bucket. No per-metric COUNT fan-out, no whole-table walk per number."""
+    exclusive pipeline bucket. No per-metric COUNT fan-out, no whole-table walk per number.
+    Scoped to `tenant_id`."""
     with session_scope() as db:
-        recruitments_total = db.query(func.count(Recruitment.id)).scalar() or 0
+        recruitments_total = (
+            db.query(func.count(Recruitment.id)).filter(Recruitment.tenant_id == tenant_id).scalar() or 0
+        )
 
         # One grouped pass over the candidate dimensions derives every tile.
         candidates = scored = interviewing = completed = advance_total = 0
@@ -201,6 +214,7 @@ def _compute_stats() -> RecruitmentStats:
                 Candidate.phase2_status,
                 func.count(),
             )
+            .filter(Candidate.tenant_id == tenant_id)
             .group_by(Candidate.processing_status, Candidate.phase2_status)
             .all()
         ):
@@ -214,7 +228,7 @@ def _compute_stats() -> RecruitmentStats:
 
         advance_total = (
             db.query(func.count(Candidate.id))
-            .filter(Candidate.phase1_decision == Phase1Decision.ADVANCE)
+            .filter(Candidate.tenant_id == tenant_id, Candidate.phase1_decision == Phase1Decision.ADVANCE)
             .scalar()
             or 0
         )
@@ -224,6 +238,7 @@ def _compute_stats() -> RecruitmentStats:
             .join(InterviewSession, InterviewResult.interview_session_id == InterviewSession.id)
             .join(Candidate, InterviewSession.candidate_id == Candidate.id)
             .filter(
+                Candidate.tenant_id == tenant_id,
                 Candidate.phase1_decision == Phase1Decision.ADVANCE,
                 InterviewResult.decision == FinalDecision.SHORTLIST,
             )
@@ -247,47 +262,50 @@ def recruitment_stats(current_user: User = Depends(get_current_user)) -> Recruit
     """Aggregate totals across ALL recruitments for the dashboard. The full aggregate is recomputed
     only when the candidate data actually changes (detected by a cheap fingerprint); between changes
     every poll is served from cache, so an idle dashboard never re-scans the table on a timer."""
+    tid = current_user.tenant_id
     ttl = get_settings().analytics_cache_seconds
     now = time.monotonic()
 
     # Layer 1 — coalescing window: within `ttl` of the last check, serve from memory, no DB at all.
     with _stats_lock:
-        cached = _stats_cache["value"]
-        if cached is not None and (now - float(_stats_cache["checked_at"])) < ttl:  # type: ignore[arg-type]
-            return cached  # type: ignore[return-value]
+        slot = _stats_cache.get(tid)
+        if slot is not None and (now - float(slot["checked_at"])) < ttl:
+            return slot["value"]
 
     # Layer 2 — change detection: a couple of near-free indexed lookups. If nothing changed since
     # the cached value, reuse it WITHOUT the expensive grouped scans.
     with session_scope() as db:
-        fingerprint = _stats_fingerprint(db)
+        fingerprint = _stats_fingerprint(db, tid)
     with _stats_lock:
-        if _stats_cache["value"] is not None and _stats_cache["fingerprint"] == fingerprint:
-            _stats_cache["checked_at"] = time.monotonic()
-            return _stats_cache["value"]  # type: ignore[return-value]
+        slot = _stats_cache.get(tid)
+        if slot is not None and slot["fingerprint"] == fingerprint:
+            slot["checked_at"] = time.monotonic()
+            return slot["value"]
 
     # Data changed (or cold cache) — recompute the full aggregate and remember its fingerprint.
-    value = _compute_stats()
+    value = _compute_stats(tid)
     with _stats_lock:
-        _stats_cache["checked_at"] = time.monotonic()
-        _stats_cache["fingerprint"] = fingerprint
-        _stats_cache["value"] = value
+        _stats_cache[tid] = {"checked_at": time.monotonic(), "fingerprint": fingerprint, "value": value}
     return value
 
 
 # Page-scoped chart analytics (funnel bar + pipeline pie), cached per (page, page_size) for a long,
 # env-configurable window. Unlike the global stats, these are computed only for the recruitments on
 # the current page and simply reused until the window lapses — the next request then recomputes.
-_page_analytics_cache: dict[tuple[int, int], tuple[float, PageAnalytics]] = {}
+_page_analytics_cache: dict[tuple[str, int, int], tuple[float, PageAnalytics]] = {}
 _page_analytics_lock = threading.Lock()
 
 
-def _compute_page_analytics(page: int, page_size: int) -> PageAnalytics:
-    """Two grouped scans, scoped to just this page's recruitments, build the per-recruitment funnel
-    bars and the mutually-exclusive pipeline breakdown for the pie."""
+def _compute_page_analytics(tenant_id: str, page: int, page_size: int) -> PageAnalytics:
+    """Two grouped scans, scoped to just this tenant's page of recruitments, build the per-
+    recruitment funnel bars and the mutually-exclusive pipeline breakdown for the pie."""
     with session_scope() as db:
-        total = db.query(func.count(Recruitment.id)).scalar() or 0
+        total = (
+            db.query(func.count(Recruitment.id)).filter(Recruitment.tenant_id == tenant_id).scalar() or 0
+        )
         page_recruitments = (
             db.query(Recruitment.id, Recruitment.title)
+            .filter(Recruitment.tenant_id == tenant_id)
             .order_by(Recruitment.created_at.desc(), Recruitment.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -309,7 +327,7 @@ def _compute_page_analytics(page: int, page_size: int) -> PageAnalytics:
                     Candidate.phase2_status,
                     func.count(),
                 )
-                .filter(Candidate.recruitment_id.in_(ids))
+                .filter(Candidate.tenant_id == tenant_id, Candidate.recruitment_id.in_(ids))
                 .group_by(
                     Candidate.recruitment_id,
                     Candidate.processing_status,
@@ -350,6 +368,7 @@ def _compute_page_analytics(page: int, page_size: int) -> PageAnalytics:
                 .join(InterviewSession, InterviewResult.interview_session_id == InterviewSession.id)
                 .join(Candidate, InterviewSession.candidate_id == Candidate.id)
                 .filter(
+                    Candidate.tenant_id == tenant_id,
                     Candidate.recruitment_id.in_(ids),
                     Candidate.phase1_decision == Phase1Decision.ADVANCE,
                     InterviewResult.decision.isnot(None),
@@ -404,8 +423,9 @@ def recruitment_analytics(
     settings = get_settings()
     if page_size is None:
         page_size = max(1, min(settings.recruitments_page_size, 100))
+    tid = current_user.tenant_id
     ttl = settings.analytics_charts_cache_seconds
-    key = (page, page_size)
+    key = (tid, page, page_size)
     now = time.monotonic()
 
     if ttl > 0:
@@ -414,7 +434,7 @@ def recruitment_analytics(
             if hit is not None and (now - hit[0]) < ttl:
                 return hit[1]
 
-    value = _compute_page_analytics(page, page_size)
+    value = _compute_page_analytics(tid, page, page_size)
 
     if ttl > 0:
         with _page_analytics_lock:
@@ -429,6 +449,7 @@ def get_recruitment(
 ) -> RecruitmentOut:
     with session_scope() as db:
         recruitment = db.get(Recruitment, recruitment_id)
-        if recruitment is None:
+        # Cross-tenant reads as "not found" (never leak existence).
+        if recruitment is None or recruitment.tenant_id != current_user.tenant_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recruitment not found")
         return _to_out(db, recruitment)

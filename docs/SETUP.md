@@ -57,9 +57,9 @@ password: ChangeMe123!         (DEFAULT_ADMIN_PASSWORD in .env)
 
 You'll be required to change this password on first login.
 
-### Admin panel (usage & cost dashboard)
+### Super admin panel (`/admin`)
 
-Separate from the recruiter account. Open **http://localhost:5173/admin** and sign in with:
+Separate from recruiter login. Open **http://localhost:5173/admin** and sign in with:
 
 ```
 username: admin              (ADMIN_USERNAME in .env)
@@ -68,7 +68,15 @@ password: <your password>    (ADMIN_PASSWORD in .env)
 
 Login stays **disabled** until `ADMIN_PASSWORD` is set to a non-empty value.
 
-The dashboard shows date-filterable usage and ₹ cost for:
+Use this panel to:
+
+1. **Create an organization** — subdomain (slug), name, and a default recruiter email.
+2. Hand the recruiter the one-time password and workspace URL (`http://{slug}.localhost:5173` in dev).
+3. View system-wide usage & ₹ cost (date-filterable).
+
+Recruiter accounts log in only on their workspace host — they cannot create other users. Provisioning is super-admin only.
+
+The usage dashboard shows cost for:
 
 | Service | What is metered | Cost formula (env rate) | USD reference → default ₹ at 86/$ |
 |---------|-----------------|-------------------------|-----------------------------------|

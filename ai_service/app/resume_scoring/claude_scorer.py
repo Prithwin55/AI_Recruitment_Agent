@@ -65,7 +65,9 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
-async def score_resume(jd_text: str, resume: ResumeContent, context: str | None = None) -> ResumeScoreResult:
+async def score_resume(
+    jd_text: str, resume: ResumeContent, context: str | None = None, tenant_id: str | None = None
+) -> ResumeScoreResult:
     settings = get_settings()
     client = _get_client()
 
@@ -89,11 +91,14 @@ async def score_resume(jd_text: str, resume: ResumeContent, context: str | None 
     # parse itself — every resume is parsed (text or vision), so this always records at least 1 page.
     await record_usage_async(
         UsageService.LLM,
+        tenant_id=tenant_id,
         input_tokens=response.usage.input_tokens,
         output_tokens=response.usage.output_tokens,
         context=context,
     )
-    await record_usage_async(UsageService.OCR, pages=max(1, resume.pages), context=context)
+    await record_usage_async(
+        UsageService.OCR, tenant_id=tenant_id, pages=max(1, resume.pages), context=context
+    )
 
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)
     if tool_use is None:

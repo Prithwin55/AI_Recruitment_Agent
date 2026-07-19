@@ -103,7 +103,7 @@ def _get_client() -> AsyncAnthropic:
 
 
 async def stream_claude_sentences(
-    system_prompt: str, messages: list[dict], max_tokens: int = 400
+    system_prompt: str, messages: list[dict], max_tokens: int = 400, tenant_id: str | None = None
 ) -> AsyncIterator[str]:
     settings = get_settings()
     client = _get_client()
@@ -130,6 +130,7 @@ async def stream_claude_sentences(
             final = await stream.get_final_message()
             await record_usage_async(
                 UsageService.LLM,
+                tenant_id=tenant_id,
                 input_tokens=final.usage.input_tokens,
                 output_tokens=final.usage.output_tokens,
                 context="conversation",
@@ -147,8 +148,9 @@ class ConversationEngine:
     responses. Doesn't speak anything itself — the orchestrator (interview_ws.py) drives actual
     TTS delivery via turn_taking.py and reports back what was truly said via commit_agent_turn."""
 
-    def __init__(self, base_system_prompt: str) -> None:
+    def __init__(self, base_system_prompt: str, tenant_id: str | None = None) -> None:
         self._base_system_prompt = base_system_prompt
+        self._tenant_id = tenant_id
         self.history: list[dict] = []
         self.should_conclude = False
 
@@ -177,7 +179,7 @@ class ConversationEngine:
         return self._stream_and_detect_conclusion(system_prompt)
 
     async def _stream_and_detect_conclusion(self, system_prompt: str) -> AsyncIterator[str]:
-        async for sentence in stream_claude_sentences(system_prompt, self.history):
+        async for sentence in stream_claude_sentences(system_prompt, self.history, tenant_id=self._tenant_id):
             if _CONCLUDE_MARKER in sentence:
                 self.should_conclude = True
                 sentence = sentence.replace(_CONCLUDE_MARKER, "").strip()

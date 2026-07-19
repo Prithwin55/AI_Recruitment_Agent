@@ -106,6 +106,7 @@ def _as_float(value: object) -> float:
 def usage_report(
     start: str | None = Query(None, description="Inclusive start date (YYYY-MM-DD or ISO datetime)"),
     end: str | None = Query(None, description="Inclusive end date (YYYY-MM-DD) / exclusive ISO datetime"),
+    tenant_id: str | None = Query(None, description="Restrict to one tenant; omit for all tenants"),
 ) -> UsageReport:
     """Aggregate metered usage for the date window and derive ₹ costs from env rates.
 
@@ -140,6 +141,8 @@ def usage_report(
             query = query.filter(UsageEvent.created_at >= start_dt)
         if end_dt is not None:
             query = query.filter(UsageEvent.created_at < end_dt)
+        if tenant_id is not None:
+            query = query.filter(UsageEvent.tenant_id == tenant_id)
         # Key by the enum value string so we never miss a row if the driver returns plain strings.
         rows: dict[str, tuple] = {}
         for r in query.group_by(UsageEvent.service).all():

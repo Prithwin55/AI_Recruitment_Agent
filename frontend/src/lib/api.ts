@@ -38,11 +38,31 @@ api.interceptors.response.use(
   },
 )
 
+export type UserRole = 'tenant_admin' | 'recruiter'
+
 export interface User {
   id: string
   email: string
+  role: UserRole
   must_change_password: boolean
 }
+
+// --- Tenant (workspace) ---
+
+export interface TenantPublic {
+  slug: string
+  name: string
+  status: 'active' | 'suspended'
+  display_name: string | null
+  logo_url: string | null
+  primary_color: string | null
+}
+
+export async function fetchCurrentTenant(): Promise<TenantPublic> {
+  const { data } = await api.get<TenantPublic>('/tenant/current')
+  return data
+}
+
 
 export interface LoginResponse {
   access_token: string
@@ -478,9 +498,69 @@ export interface UsageReport {
   pricing: UsagePricing
 }
 
-export async function getAdminUsage(opts: { start?: string; end?: string } = {}): Promise<UsageReport> {
+export async function getAdminUsage(
+  opts: { start?: string; end?: string; tenantId?: string } = {},
+): Promise<UsageReport> {
   const { data } = await adminApi.get<UsageReport>('/admin/usage', {
-    params: { start: opts.start || undefined, end: opts.end || undefined },
+    params: { start: opts.start || undefined, end: opts.end || undefined, tenant_id: opts.tenantId || undefined },
   })
+  return data
+}
+
+// --- Super-admin: tenant provisioning ---
+
+export interface AdminTenant {
+  id: string
+  slug: string
+  name: string
+  status: 'active' | 'suspended'
+  display_name: string | null
+  logo_url: string | null
+  primary_color: string | null
+  users: number
+  recruitments: number
+  candidates: number
+}
+
+export async function listTenants(): Promise<AdminTenant[]> {
+  const { data } = await adminApi.get<AdminTenant[]>('/admin/tenants')
+  return data
+}
+
+export async function createTenant(payload: {
+  slug: string
+  name: string
+  recruiter_email: string
+}): Promise<{ tenant: AdminTenant; recruiter_email: string; temp_password: string }> {
+  const { data } = await adminApi.post('/admin/tenants', payload)
+  return data
+}
+
+export async function updateTenant(
+  tenantId: string,
+  payload: { status?: 'active' | 'suspended'; name?: string },
+): Promise<AdminTenant> {
+  const { data } = await adminApi.patch<AdminTenant>(`/admin/tenants/${tenantId}`, payload)
+  return data
+}
+
+export interface TenantAccount {
+  id: string
+  email: string
+  role: string
+  must_change_password: boolean
+  created_at: string
+}
+
+export async function listTenantUsers(tenantId: string): Promise<TenantAccount[]> {
+  const { data } = await adminApi.get<TenantAccount[]>(`/admin/tenants/${tenantId}/users`)
+  return data
+}
+
+export async function addTenantUser(
+  tenantId: string,
+  email: string,
+): Promise<{ user: TenantAccount; temp_password: string }> {
+  const { data } = await adminApi.post(`/admin/tenants/${tenantId}/users`, { email })
   return data
 }
