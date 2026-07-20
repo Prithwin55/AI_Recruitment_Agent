@@ -1,0 +1,13 @@
+# Keep secrets, local data, and heavy dev dirs OUT of the build context / images.
+**/.env
+**/.env.local
+storage/
+.venv/
+**/__pycache__/
+**/*.pyc
+.git/
+frontend/node_modules/
+frontend/dist/
+docs/
+*.md
+scripts/

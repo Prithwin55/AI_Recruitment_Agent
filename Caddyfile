@@ -1,0 +1,49 @@
+# Reverse proxy + static app for the multi-tenant recruitment platform.
+# Set your domain + email here (or via env in docker-compose). Serves every tenant subdomain.
+#
+# TLS for wildcard subdomains: the simplest is on-demand TLS (below) which issues a cert per
+# subdomain on first request over HTTP-01 — works with the stock caddy image, no DNS plugin.
+# For a true *.domain wildcard cert you must build Caddy with your DNS provider's plugin (xcaddy)
+# and use the `tls { dns <provider> ... }` block instead. See docs/DEPLOY.md.
+
+{
+	email {$ACME_EMAIL}
+	# on-demand issuance for tenant subdomains; the `ask` endpoint gates which hosts are allowed
+	# so this isn't an open cert-issuance relay (backend returns 200 only for real tenants).
+	on_demand_tls {
+		ask http://backend:8000/tenant/allowed
+	}
+}
+
+*.{$ROOT_DOMAIN}, {$ROOT_DOMAIN} {
+	tls {$ACME_EMAIL} {
+		on_demand
+	}
+
+	# Cross-origin isolation — REQUIRED so the in-browser Pocket TTS WASM runs multi-threaded
+	# (matches vite.config.ts). Without these the agent's voice breaks up.
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "credentialless"
+	}
+
+	# Recruiter/admin API. strip_prefix mirrors the Vite dev proxy; Caddy forwards Host upstream by
+	# default, so tenant resolution (subdomain) works.
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy backend:8000
+	}
+
+	# AI service, incl. the interview WebSocket (Caddy upgrades WS automatically).
+	handle /ai/* {
+		uri strip_prefix /ai
+		reverse_proxy ai_service:8100
+	}
+
+	# Single-page app: serve static build, fall back to index.html for client routing.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

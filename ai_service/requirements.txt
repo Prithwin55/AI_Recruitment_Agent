@@ -1,4 +1,9 @@
--e ../shared
+# Deps for the vendored `shared/` package (self-contained; no external shared install).
+sqlalchemy>=2.0
+pydantic>=2.6
+pydantic-settings>=2.2
+bcrypt>=4.1
+python-jose[cryptography]>=3.3
 
 fastapi>=0.115
 uvicorn[standard]>=0.30

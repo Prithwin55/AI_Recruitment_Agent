@@ -1,0 +1,60 @@
+# Single-host deployment. backend + ai_service SHARE one `storage` volume (the SQLite DB + files),
+# so they must run on the same Docker host. `web` (Caddy) terminates TLS, serves the built SPA, and
+# proxies /api -> backend, /ai -> ai_service (WebSocket-aware).
+#
+# Set ROOT_DOMAIN and ACME_EMAIL for compose (repo-root .env or your shell), and put real runtime
+# config in backend/.env and ai_service/.env (loaded via env_file). Then:  docker compose up -d --build
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: ./backend/.env         # runtime config -> container env -> pydantic Settings
+    environment:
+      - RELOAD=0                      # single worker (the auto-schedule sweep must not run twice)
+    volumes:
+      - storage:/app/storage          # SHARED DB + resumes/transcripts/recordings
+    restart: unless-stopped
+    expose:
+      - "8000"
+
+  ai_service:
+    build:
+      context: .
+      dockerfile: ai_service/Dockerfile
+    env_file: ./ai_service/.env
+    environment:
+      - RELOAD=0                      # single worker (in-process interview state) — NEVER scale
+    volumes:
+      - storage:/app/storage          # SAME volume as backend
+    restart: unless-stopped
+    expose:
+      - "8100"
+    depends_on:
+      - backend
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_ROOT_DOMAIN: ${ROOT_DOMAIN:-localhost}   # baked into the SPA at build time
+    environment:
+      - ROOT_DOMAIN=${ROOT_DOMAIN:-localhost}          # used by the Caddyfile
+      - ACME_EMAIL=${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data              # persists issued TLS certs across restarts
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - ai_service
+    restart: unless-stopped
+
+volumes:
+  storage:       # the ONE shared data volume for backend + ai_service
+  caddy_data:
+  caddy_config:
