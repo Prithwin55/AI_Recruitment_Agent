@@ -48,4 +48,6 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-app.include_router(interview_ws_router)
+# The interview WebSocket is namespaced under /ai so nginx/the dev proxy can forward /ai/* straight
+# through with NO path rewriting. /health stays unprefixed at root for infra health checks.
+app.include_router(interview_ws_router, prefix="/ai")

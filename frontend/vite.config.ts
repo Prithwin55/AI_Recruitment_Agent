@@ -40,11 +40,13 @@ export default defineConfig({
     allowedHosts: true,
     port: 5173,
     headers: crossOriginIsolationHeaders,
+    // Both services now serve their routes natively under /api and /ai (see backend/app/main.py
+    // and ai_service/app/main.py), so this proxy is a PURE passthrough — no path rewriting. This
+    // mirrors production nginx exactly: one location block per prefix, no prefix-stripping footgun.
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api/, ''),
         // changeOrigin rewrites Host to the target (localhost), which would make the backend
         // resolve every tenant subdomain to the default tenant. Forward the ORIGINAL browser host
         // so resolve_tenant sees e.g. "acme.localhost" and scopes to that tenant.
@@ -58,7 +60,6 @@ export default defineConfig({
         target: 'http://localhost:8100',
         changeOrigin: true,
         ws: true,
-        rewrite: (p) => p.replace(/^\/ai/, ''),
         configure: (proxy) => {
           proxy.on('proxyReq', (proxyReq, req) => {
             if (req.headers.host) proxyReq.setHeader('x-forwarded-host', req.headers.host)

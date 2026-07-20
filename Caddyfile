@@ -8,10 +8,13 @@
 
 {
 	email {$ACME_EMAIL}
-	# on-demand issuance for tenant subdomains; the `ask` endpoint gates which hosts are allowed
-	# so this isn't an open cert-issuance relay (backend returns 200 only for real tenants).
+	# on-demand issuance for tenant subdomains, gated by an `ask` endpoint so this isn't an open
+	# cert-issuance relay. NOTE: this currently points at a backend endpoint (GET /api/tenant/allowed
+	# returning 200/403 per hostname) that is NOT present in this codebase right now — add it back
+	# (see git history: backend/app/tenancy/routes.py) before relying on on-demand TLS, or switch to
+	# a single wildcard cert via your DNS provider's plugin instead (see docs/DEPLOY.md).
 	on_demand_tls {
-		ask http://backend:8000/tenant/allowed
+		ask http://backend:8000/api/tenant/allowed
 	}
 }
 
@@ -27,16 +30,16 @@
 		Cross-Origin-Embedder-Policy "credentialless"
 	}
 
-	# Recruiter/admin API. strip_prefix mirrors the Vite dev proxy; Caddy forwards Host upstream by
-	# default, so tenant resolution (subdomain) works.
+	# Recruiter/admin API — served NATIVELY at /api/* by the backend, so no strip_prefix: Caddy
+	# forwards the request URI unchanged. Caddy forwards Host upstream by default, so tenant
+	# resolution (subdomain) works.
 	handle /api/* {
-		uri strip_prefix /api
 		reverse_proxy backend:8000
 	}
 
-	# AI service, incl. the interview WebSocket (Caddy upgrades WS automatically).
+	# AI service, incl. the interview WebSocket — served natively at /ai/* (Caddy upgrades WS
+	# automatically). No strip_prefix here either.
 	handle /ai/* {
-		uri strip_prefix /ai
 		reverse_proxy ai_service:8100
 	}
 

@@ -57,11 +57,15 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-app.include_router(tenancy_router)
-app.include_router(auth_router)
-app.include_router(admin_router)
-app.include_router(admin_tenants_router)
-app.include_router(recruitments_router)
-app.include_router(candidates_router)
-app.include_router(scheduling_router)
-app.include_router(interview_public_router)
+# Every API route is namespaced under /api — nginx/the dev proxy then forwards /api/* straight
+# through with NO path rewriting (simpler and less error-prone than stripping a prefix). /health
+# stays unprefixed at root, the conventional path for infra health checks (Docker/k8s/LB probes).
+API_PREFIX = "/api"
+app.include_router(tenancy_router, prefix=API_PREFIX)
+app.include_router(auth_router, prefix=API_PREFIX)
+app.include_router(admin_router, prefix=API_PREFIX)
+app.include_router(admin_tenants_router, prefix=API_PREFIX)
+app.include_router(recruitments_router, prefix=API_PREFIX)
+app.include_router(candidates_router, prefix=API_PREFIX)
+app.include_router(scheduling_router, prefix=API_PREFIX)
+app.include_router(interview_public_router, prefix=API_PREFIX)
