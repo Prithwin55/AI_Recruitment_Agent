@@ -1,7 +1,6 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import { LayoutDashboard, LogOut, Sparkles, Users } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
-import { useTenant } from '@/context/TenantContext'
 import { Button } from '@/components/ui/button'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { cn } from '@/lib/utils'
@@ -13,10 +12,7 @@ const NAV_ITEMS = [
 
 export default function AppShell() {
   const { user, logout } = useAuth()
-  const { tenant } = useTenant()
   const location = useLocation()
-
-  const workspaceName = tenant?.display_name || tenant?.name || 'AI Recruitment'
 
   return (
     <div className="flex min-h-svh flex-col bg-muted/30">
@@ -24,12 +20,8 @@ export default function AppShell() {
         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-6">
             <Link to="/" className="flex items-center gap-2 font-semibold text-foreground">
-              {tenant?.logo_url ? (
-                <img src={tenant.logo_url} alt="" className="h-5 w-5 rounded object-contain" />
-              ) : (
-                <Sparkles className="h-5 w-5 text-primary" />
-              )}
-              {workspaceName}
+              <Sparkles className="h-5 w-5 text-primary" />
+              AI Recruitment
             </Link>
             <nav className="flex items-center gap-1">
               {NAV_ITEMS.map((item) => {

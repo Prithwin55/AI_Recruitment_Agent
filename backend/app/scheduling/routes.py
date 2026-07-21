@@ -40,7 +40,7 @@ async def schedule_interviews(
 ) -> ScheduleInterviewsResult:
     with session_scope() as db:
         recruitment = db.get(Recruitment, recruitment_id)
-        if recruitment is None or recruitment.tenant_id != current_user.tenant_id:
+        if recruitment is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recruitment not found")
 
         # Only candidates a recruiter advanced by hand are scheduled here — AI-advanced ones
@@ -49,7 +49,6 @@ async def schedule_interviews(
         candidates = (
             db.query(Candidate)
             .filter(
-                Candidate.tenant_id == current_user.tenant_id,
                 Candidate.recruitment_id == recruitment_id,
                 Candidate.phase1_decision == Phase1Decision.ADVANCE,
                 Candidate.phase2_status == Phase2Status.NOT_SCHEDULED,

@@ -2,7 +2,7 @@
 # so they must run on the same Docker host. `web` (Caddy) terminates TLS, serves the built SPA, and
 # proxies /api -> backend, /ai -> ai_service (WebSocket-aware).
 #
-# Set ROOT_DOMAIN and ACME_EMAIL for compose (repo-root .env or your shell), and put real runtime
+# Set DOMAIN and ACME_EMAIL for compose (repo-root .env or your shell), and put real runtime
 # config in backend/.env and ai_service/.env (loaded via env_file). Then:  docker compose up -d --build
 
 services:
@@ -41,10 +41,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-      args:
-        VITE_ROOT_DOMAIN: ${ROOT_DOMAIN:-localhost}   # baked into the SPA at build time
     environment:
-      - ROOT_DOMAIN=${ROOT_DOMAIN:-localhost}          # used by the Caddyfile
+      - DOMAIN=${DOMAIN:-localhost}                    # used by the Caddyfile for TLS + routing
       - ACME_EMAIL=${ACME_EMAIL:-}
     ports:
       - "80:80"

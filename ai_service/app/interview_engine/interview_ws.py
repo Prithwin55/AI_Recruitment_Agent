@@ -56,11 +56,9 @@ class InterviewOrchestrator:
         jd_text: str,
         candidate_first_name: str | None,
         candidate_summary: str,
-        tenant_id: str | None = None,
     ) -> None:
         self.websocket = websocket
         self.session_id = session_id
-        self.tenant_id = tenant_id
         self.language = language
         self.duration_minutes = duration_minutes
         self.role_title = role_title
@@ -85,8 +83,8 @@ class InterviewOrchestrator:
         )
         language_label = "English" if language == "en" else "Arabic (Omani)"
         system_prompt = build_system_prompt(role_title, jd_text, candidate_summary, language_label, duration_minutes)
-        self.conversation = ConversationEngine(system_prompt, tenant_id=tenant_id)
-        self.transcript = TranscriptRecorder(session_id, tenant_id=tenant_id)
+        self.conversation = ConversationEngine(system_prompt)
+        self.transcript = TranscriptRecorder(session_id)
 
         self.engine = TurnTakingEngine(
             self.provider,
@@ -412,10 +410,10 @@ class InterviewOrchestrator:
         # Flush this session's accumulated STT/TTS usage (16 kHz 16-bit mono -> bytes/32000 s).
         context = f"interview:{self.session_id}"
         await record_usage_async(
-            UsageService.STT, tenant_id=self.tenant_id, seconds=self._stt_audio_bytes / 32000.0, context=context
+            UsageService.STT, seconds=self._stt_audio_bytes / 32000.0, context=context
         )
         await record_usage_async(
-            UsageService.TTS, tenant_id=self.tenant_id, characters=self._tts_characters, context=context
+            UsageService.TTS, characters=self._tts_characters, context=context
         )
 
         asyncio.create_task(run_post_interview_analysis(self.session_id))
@@ -443,7 +441,6 @@ async def interview_websocket(websocket: WebSocket, token: str) -> None:
             return
 
         session_id = session_row.id
-        tenant_id = session_row.tenant_id
         language = session_row.language.value
         duration_minutes = session_row.duration_minutes
 
@@ -475,7 +472,6 @@ async def interview_websocket(websocket: WebSocket, token: str) -> None:
         jd_text=jd_text,
         candidate_first_name=candidate_first_name,
         candidate_summary=candidate_summary,
-        tenant_id=tenant_id,
     )
 
     try:

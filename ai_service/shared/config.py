@@ -129,44 +129,6 @@ class Settings(BaseSettings):
     def ai_service_base_url(self) -> str:
         return f"{self.ai_service_url}:{self.ai_service_port}"
 
-    # --- Multi-tenancy ---
-    # Tenants live on subdomains of root_domain (e.g. acme.<root_domain>). In dev this is
-    # "localhost" and tenants are reached at acme.localhost:<frontend_port>; in prod set it to the
-    # real apex (e.g. "recruit.example.com") served over https behind the reverse proxy.
-    root_domain: str = "localhost"
-    base_domain_scheme: str = "http"  # "https" in production
-    # Slug of the tenant that owns all pre-existing data after the one-time backfill, and the
-    # tenant served when a request arrives with no subdomain (bare host / IP) in dev.
-    default_tenant_slug: str = "default"
-
-    @property
-    def cors_origin_regex(self) -> str:
-        """Match any tenant subdomain origin so every tenant's frontend can call the API.
-
-        Examples (root_domain=localhost, scheme=http):
-          http://acme.localhost:5173  ✓
-          http://localhost:5173       ✗  (apex — put in allow_origins instead)
-        Examples (root_domain=recruit.example.com, scheme=https):
-          https://acme.recruit.example.com  ✓
-
-        Used with FastAPI CORSMiddleware `allow_origin_regex` (fullmatch). Keep in sync
-        with `tenant_frontend_base_url` / frontend `VITE_ROOT_DOMAIN`.
-        """
-        import re as _re
-
-        root = _re.escape(self.root_domain.split(":", 1)[0])
-        # DNS-label slug + optional port (dev :5173; prod usually no port).
-        return rf"^{self.base_domain_scheme}://[a-z0-9-]+\.{root}(:\d+)?$"
-
-    def tenant_frontend_base_url(self, slug: str) -> str:
-        """Public base URL for a tenant's workspace, e.g. https://acme.example.com. Used to build
-        candidate interview links. In dev (root_domain=localhost) the frontend port is appended so
-        the link is reachable at acme.localhost:5173."""
-        host = f"{slug}.{self.root_domain}"
-        if self.root_domain in ("localhost", "127.0.0.1"):
-            return f"{self.base_domain_scheme}://{host}:{self.frontend_port}"
-        return f"{self.base_domain_scheme}://{host}"
-
     # --- Storage ---
     # The path is used exactly as given: an absolute path is used as-is; a relative path (e.g.
     # "../storage") is resolved against the current working directory. Both services must therefore

@@ -128,29 +128,14 @@ def _run_lightweight_migrations() -> None:
 def _create_analytics_indexes() -> None:
     """Composite covering indexes for the dashboard aggregates. They let SQLite answer the
     stats GROUP BY / per-recruitment count queries with index-only scans instead of walking the
-    whole candidates table. IF NOT EXISTS so this is idempotent and applies to existing DBs too.
-    Tenant-leading variants keep the now tenant-scoped aggregates index-only."""
+    whole candidates table. IF NOT EXISTS so this is idempotent and applies to existing DBs too."""
     statements = (
-        # Global stats (single-tenant / legacy): GROUP BY over the whole table.
+        # Global stats: GROUP BY over the whole table.
         'CREATE INDEX IF NOT EXISTS "ix_candidates_stats" '
         'ON "candidates" ("processing_status", "phase1_decision", "phase2_status")',
         # Per-recruitment page counts: narrowed by recruitment_id, then grouped by the same dims.
         'CREATE INDEX IF NOT EXISTS "ix_candidates_recr_stats" '
         'ON "candidates" ("recruitment_id", "processing_status", "phase1_decision", "phase2_status")',
-        # Tenant-scoped stats GROUP BY.
-        'CREATE INDEX IF NOT EXISTS "ix_candidates_tenant_stats" '
-        'ON "candidates" ("tenant_id", "processing_status", "phase1_decision", "phase2_status")',
-        # Tenant-scoped per-recruitment lookups.
-        'CREATE INDEX IF NOT EXISTS "ix_candidates_tenant_recr" '
-        'ON "candidates" ("tenant_id", "recruitment_id")',
-        # Tenant recruitment list (ordered by created_at) + count.
-        'CREATE INDEX IF NOT EXISTS "ix_recruitments_tenant" '
-        'ON "recruitments" ("tenant_id", "created_at")',
-        # Per-tenant usage aggregation over a date window.
-        'CREATE INDEX IF NOT EXISTS "ix_usage_events_tenant" '
-        'ON "usage_events" ("tenant_id", "created_at")',
-        # Per-tenant user lookup (login / listings).
-        'CREATE INDEX IF NOT EXISTS "ix_users_tenant" ON "users" ("tenant_id")',
     )
     with engine.connect() as conn:
         for ddl in statements:
@@ -161,92 +146,86 @@ def _create_analytics_indexes() -> None:
                 conn.rollback()
 
 
-# Fixed id of the tenant that owns all data created before multi-tenancy. Stable so the backfill is
-# idempotent and so both services agree on it.
-DEFAULT_TENANT_ID = "00000000000000000000000000000001"
-
-# Tables that gained a tenant_id column and need existing rows backfilled to the default tenant.
-_TENANT_BACKFILL_TABLES = ("users", "recruitments", "candidates", "interview_sessions", "usage_events")
+# Tables that carried a tenant_id (+ users.role) that must be physically removed when reverting to
+# a single shared workspace. Rebuilt by copying into a fresh, tenant-free schema.
+_DETENANT_TABLES = ("users", "recruitments", "candidates", "interview_sessions", "usage_events")
 
 
-def _backfill_tenancy() -> None:
-    """One-time, idempotent, race-tolerant backfill for the multi-tenancy migration.
-
-    _run_lightweight_migrations() adds the tenant_id column but (a UUID FK has no scalar default)
-    leaves existing rows NULL — which would make every tenant-scoped query hide all legacy data.
-    Here we create a default tenant, assign every NULL tenant_id to it, promote the existing seeded
-    account to that tenant's admin, and swap the old global-unique email index for a composite
-    (tenant_id, email) one. Safe to run from both services concurrently on startup."""
-    from .config import get_settings
-
-    settings = get_settings()
-
-    def _run(conn, sql: str, params: dict | None = None) -> None:
-        try:
-            conn.exec_driver_sql(sql, params or {})
-            conn.commit()
-        except Exception:
-            conn.rollback()
-
+def _drop_tenancy() -> None:
+    """One-time, idempotent migration back to single-tenant: physically drop the `tenants` table
+    and every `tenant_id` / `users.role` column. SQLite can't DROP a FK/indexed column in place, so
+    each affected table is rebuilt (rename -> recreate fresh from the current models -> copy the
+    surviving columns -> drop the old). No-op once the tenants table is gone."""
     with engine.connect() as conn:
-        # If the tenants table doesn't exist yet (create_all hasn't run), nothing to do.
-        try:
-            tables = {
-                r[0] for r in conn.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-        except Exception:
-            return
-        if "tenants" not in tables or "users" not in tables:
-            return
+        tables = {
+            r[0] for r in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    if "tenants" not in tables:
+        return  # already single-tenant (or a brand-new DB) — nothing to do
 
-        # 1) Ensure the default tenant exists. NB: this schema stores enums by NAME (SQLAlchemy's
-        #    default), e.g. 'ACTIVE'/'TENANT_ADMIN' — raw SQL must match that, not the lower-case value.
-        _run(
-            conn,
-            'INSERT OR IGNORE INTO tenants (id, slug, name, status, created_at) '
-            "VALUES (:id, :slug, :name, 'ACTIVE', CURRENT_TIMESTAMP)",
-            {"id": DEFAULT_TENANT_ID, "slug": settings.default_tenant_slug, "name": "Default"},
-        )
-
-        # 2) Backfill NULL tenant_id -> default tenant on every tenant-scoped table.
-        for table in _TENANT_BACKFILL_TABLES:
-            if table in tables:
-                _run(
-                    conn,
-                    f'UPDATE "{table}" SET tenant_id = :tid WHERE tenant_id IS NULL',
-                    {"tid": DEFAULT_TENANT_ID},
-                )
-
-        # 3a) Normalize enum columns to NAMES: the lightweight migrator backfilled the role column
-        #     with the scalar-default's lower-case *value* ('recruiter'), and an earlier build wrote
-        #     tenant status as a value too — the schema stores NAMES, so self-heal both.
-        _run(conn, "UPDATE users SET role = 'RECRUITER' WHERE role IS NULL OR role = 'recruiter'")
-        _run(conn, "UPDATE users SET role = 'TENANT_ADMIN' WHERE role = 'tenant_admin'")
-        _run(conn, "UPDATE tenants SET status = 'ACTIVE' WHERE status = 'active'")
-        _run(conn, "UPDATE tenants SET status = 'SUSPENDED' WHERE status = 'suspended'")
-
-        # 3b) (removed) No longer promote a default tenant-admin — workspace accounts are recruiters
-        #     provisioned by the super-admin panel; legacy TENANT_ADMIN rows keep working as-is.
-
-        # 4) Swap the old global-unique email index for the composite (tenant_id, email). The old
-        #    single-column unique index blocks the same email across tenants; drop it, add composite.
-        try:
-            index_rows = conn.exec_driver_sql('PRAGMA index_list("users")').fetchall()
-            for row in index_rows:
-                idx_name, is_unique = row[1], row[2]
-                if not is_unique:
+    logger.info("Reverting to single-tenant: dropping tenants table + tenant_id columns")
+    try:
+        # AUTOCOMMIT so `PRAGMA foreign_keys=OFF` actually takes effect — inside SQLAlchemy's
+        # implicit transaction the pragma is silently ignored and FK enforcement stays on.
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            for t in _DETENANT_TABLES:
+                if t not in tables:
                     continue
-                cols = [c[2] for c in conn.exec_driver_sql(f'PRAGMA index_info("{idx_name}")').fetchall()]
-                if cols == ["email"]:  # old global-unique email index
-                    _run(conn, f'DROP INDEX IF EXISTS "{idx_name}"')
-        except Exception:
-            conn.rollback()
-        _run(
-            conn,
-            'CREATE UNIQUE INDEX IF NOT EXISTS "uq_users_tenant_email" ON "users" ("tenant_id", "email")',
-        )
+                conn.exec_driver_sql(f'DROP TABLE IF EXISTS "{t}__old"')  # leftover from a prior failed run
+                conn.exec_driver_sql(f'ALTER TABLE "{t}" RENAME TO "{t}__old"')
+                # A rename keeps the table's explicitly-named indexes (now pointing at *__old),
+                # so their names would collide when create_all rebuilds the fresh table. Drop them.
+                old_indexes = conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=:t "
+                    "AND sql IS NOT NULL",
+                    {"t": f"{t}__old"},
+                ).fetchall()
+                for (idx_name,) in old_indexes:
+                    conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{idx_name}"')
+
+        # Recreate the (now tenant-free) tables from the current models.
+        Base.metadata.create_all(bind=engine)
+
+        from sqlalchemy import DateTime
+
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            for t in _DETENANT_TABLES:
+                old = f"{t}__old"
+                meta_table = Base.metadata.tables[t]
+                new_cols = [r[1] for r in conn.exec_driver_sql(f'PRAGMA table_info("{t}")').fetchall()]
+                old_cols = {r[1] for r in conn.exec_driver_sql(f'PRAGMA table_info("{old}")').fetchall()}
+                common = [c for c in new_cols if c in old_cols]  # surviving columns only
+                # Old rows may hold NULLs for columns the new schema requires NOT NULL (e.g. a
+                # legacy candidate with no updated_at). Coalesce those to a sane fallback rather than
+                # letting the copy fail: the column's scalar default, else another timestamp / now.
+                select_exprs = []
+                for c in common:
+                    col = meta_table.columns[c]
+                    expr = f'"{c}"'
+                    if not col.nullable:
+                        lit = _scalar_default_literal(col)
+                        if lit is not None:
+                            expr = f'COALESCE("{c}", {lit})'
+                        elif isinstance(col.type, DateTime):
+                            fallback = "CURRENT_TIMESTAMP"
+                            if "created_at" in common and c != "created_at":
+                                fallback = 'COALESCE("created_at", CURRENT_TIMESTAMP)'
+                            expr = f'COALESCE("{c}", {fallback})'
+                    select_exprs.append(expr)
+                cols_csv = ", ".join(f'"{c}"' for c in common)
+                sel_csv = ", ".join(select_exprs)
+                conn.exec_driver_sql(f'INSERT INTO "{t}" ({cols_csv}) SELECT {sel_csv} FROM "{old}"')
+                conn.exec_driver_sql(f'DROP TABLE "{old}"')
+            conn.exec_driver_sql('DROP TABLE IF EXISTS "tenants"')
+        logger.info("Single-tenant migration complete")
+    except Exception:
+        # Fail loud — a half-migrated DB must stop startup, not run degraded.
+        logger.exception("De-tenancy migration failed")
+        raise
 
 
 def init_db() -> None:
@@ -258,5 +237,5 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()
-    _backfill_tenancy()
+    _drop_tenancy()
     _create_analytics_indexes()

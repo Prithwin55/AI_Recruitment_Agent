@@ -58,10 +58,9 @@ async def bulk_upload_resumes(
 ) -> BulkUploadResult:
     with session_scope() as db:
         recruitment = db.get(Recruitment, recruitment_id)
-        if recruitment is None or recruitment.tenant_id != current_user.tenant_id:
+        if recruitment is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recruitment not found")
 
-    tenant_id = current_user.tenant_id
     created: list[CandidateOut] = []
     rejected: list[RejectedUpload] = []
 
@@ -82,7 +81,6 @@ async def bulk_upload_resumes(
 
         with session_scope() as db:
             candidate = Candidate(
-                tenant_id=tenant_id,
                 recruitment_id=recruitment_id,
                 original_filename=filename,
                 stored_path="",
@@ -160,15 +158,12 @@ def list_candidates(
     # it (bounded 1..100) for callers that need a different page. Both sections use the same size.
     if page_size is None:
         page_size = max(1, min(get_settings().candidates_page_size, 100))
-    tid = current_user.tenant_id
     with session_scope() as db:
         recruitment = db.get(Recruitment, recruitment_id)
-        if recruitment is None or recruitment.tenant_id != tid:
+        if recruitment is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recruitment not found")
 
-        base = db.query(Candidate).filter(
-            Candidate.tenant_id == tid, Candidate.recruitment_id == recruitment_id
-        )
+        base = db.query(Candidate).filter(Candidate.recruitment_id == recruitment_id)
         term = (search or "").strip()
         if term:
             like = f"%{term}%"
@@ -245,7 +240,7 @@ def update_candidate_decision(
 ) -> CandidateOut:
     with session_scope() as db:
         candidate = db.get(Candidate, candidate_id)
-        if candidate is None or candidate.tenant_id != current_user.tenant_id:
+        if candidate is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
 
         candidate.phase1_decision = Phase1Decision(payload.decision)
@@ -265,7 +260,7 @@ def get_candidate(
 ) -> CandidateDetailOut:
     with session_scope() as db:
         candidate = db.get(Candidate, candidate_id)
-        if candidate is None or candidate.tenant_id != current_user.tenant_id:
+        if candidate is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
 
         sessions = (
@@ -328,7 +323,7 @@ def download_resume(
 ) -> FileResponse:
     with session_scope() as db:
         candidate = db.get(Candidate, candidate_id)
-        if candidate is None or candidate.tenant_id != current_user.tenant_id:
+        if candidate is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
         stored_path = candidate.stored_path
         original_filename = candidate.original_filename

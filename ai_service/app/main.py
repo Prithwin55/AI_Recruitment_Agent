@@ -15,13 +15,11 @@ settings = get_settings()
 
 app = FastAPI(title="AI Recruitment — AI Service")
 
-# Phase 8a — multi-tenant CORS (same policy as backend):
-# apex/dev origin via allow_origins; any tenant subdomain via allow_origin_regex.
-# Needed when the browser hits :8100 cross-origin (absolute VITE_AI_SERVICE_WS_URL / no proxy).
+# CORS (same single-origin policy as backend). Needed when the browser hits :8100 cross-origin
+# (absolute VITE_AI_SERVICE_WS_URL / no proxy).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_base_url],
-    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

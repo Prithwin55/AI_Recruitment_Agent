@@ -1,8 +1,8 @@
 import logging
 
 from shared.config import get_settings
-from shared.db import DEFAULT_TENANT_ID, session_scope
-from shared.models import Tenant, TenantStatus, User, UserRole
+from shared.db import session_scope
+from shared.models import User
 from shared.security import hash_password
 
 logger = logging.getLogger(__name__)
@@ -15,24 +15,9 @@ def seed_default_user() -> None:
         if existing is not None:
             return
 
-        # Guarantee the default tenant exists (init_db()'s backfill normally creates it, but seed
-        # must not depend on ordering) and make the first account its default recruiter.
-        tenant = db.get(Tenant, DEFAULT_TENANT_ID)
-        if tenant is None:
-            tenant = Tenant(
-                id=DEFAULT_TENANT_ID,
-                slug=settings.default_tenant_slug,
-                name="Default",
-                status=TenantStatus.ACTIVE,
-            )
-            db.add(tenant)
-            db.flush()
-
         user = User(
-            tenant_id=DEFAULT_TENANT_ID,
             email=settings.default_admin_email,
             password_hash=hash_password(settings.default_admin_password),
-            role=UserRole.RECRUITER,
             must_change_password=True,
         )
         db.add(user)

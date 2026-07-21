@@ -127,7 +127,6 @@ async def _score_interview(
     candidate_summary: str,
     sentiment_summary: dict,
     context: str | None = None,
-    tenant_id: str | None = None,
 ) -> FinalInterviewScore:
     settings = get_settings()
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -157,7 +156,6 @@ Now call record_interview_score with your final assessment."""
 
     await record_usage_async(
         UsageService.LLM,
-        tenant_id=tenant_id,
         input_tokens=response.usage.input_tokens,
         output_tokens=response.usage.output_tokens,
         context=context,
@@ -176,7 +174,6 @@ async def run_post_interview_analysis(session_id: str) -> None:
         session_row = db.get(InterviewSession, session_id)
         if session_row is None:
             return
-        tenant_id = session_row.tenant_id
         candidate = db.get(Candidate, session_row.candidate_id)
         recruitment = db.get(Recruitment, candidate.recruitment_id) if candidate else None
         turns = (
@@ -203,7 +200,7 @@ async def run_post_interview_analysis(session_id: str) -> None:
     try:
         score = await _score_interview(
             transcript_text, jd_text, candidate_summary, sentiment_summary,
-            context=f"interview:{session_id}", tenant_id=tenant_id,
+            context=f"interview:{session_id}",
         )
     except Exception:  # noqa: BLE001
         logger.exception("Post-interview scoring failed for session %s", session_id)

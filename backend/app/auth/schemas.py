@@ -32,13 +32,6 @@ class ChangePasswordRequest(BaseModel):
 class UserOut(BaseModel):
     id: str
     email: str
-    role: str
     must_change_password: bool
 
     model_config = {"from_attributes": True}
-
-    @field_validator("role", mode="before")
-    @classmethod
-    def _coerce_role(cls, v: object) -> str:
-        # Enum -> its value; also tolerates a plain string.
-        return getattr(v, "value", v)
