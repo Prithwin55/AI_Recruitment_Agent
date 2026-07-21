@@ -531,7 +531,7 @@ export async function createTenant(payload: {
   slug: string
   name: string
   recruiter_email: string
-}): Promise<{ tenant: AdminTenant; recruiter_email: string; temp_password: string }> {
+}): Promise<{ tenant: AdminTenant; recruiter_email: string; temp_password: string; login_url: string }> {
   const { data } = await adminApi.post('/admin/tenants', payload)
   return data
 }

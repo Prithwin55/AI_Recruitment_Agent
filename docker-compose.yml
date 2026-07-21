@@ -13,6 +13,8 @@ services:
     env_file: ./backend/.env         # runtime config -> container env -> pydantic Settings
     environment:
       - RELOAD=0                      # single worker (the auto-schedule sweep must not run twice)
+      - STORAGE_DIR=/app/storage      # MUST equal the volume mount below (overrides .env) so both
+                                      # services share one DB; otherwise resumes stay "queued".
     volumes:
       - storage:/app/storage          # SHARED DB + resumes/transcripts/recordings
     restart: unless-stopped
@@ -26,6 +28,7 @@ services:
     env_file: ./ai_service/.env
     environment:
       - RELOAD=0                      # single worker (in-process interview state) — NEVER scale
+      - STORAGE_DIR=/app/storage      # SAME absolute path as backend -> one shared DB
     volumes:
       - storage:/app/storage          # SAME volume as backend
     restart: unless-stopped

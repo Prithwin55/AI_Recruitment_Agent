@@ -168,6 +168,9 @@ class Settings(BaseSettings):
         return f"{self.base_domain_scheme}://{host}"
 
     # --- Storage ---
+    # The path is used exactly as given: an absolute path is used as-is; a relative path (e.g.
+    # "../storage") is resolved against the current working directory. Both services must therefore
+    # be launched so this points at the SAME folder (e.g. run each from its own dir with ../storage).
     storage_dir: str = str(REPO_ROOT / "storage")
 
     @property

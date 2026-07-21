@@ -9,6 +9,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
+from shared.config import get_settings
 from shared.db import session_scope
 from shared.models import Candidate, Recruitment, Tenant, TenantStatus, User, UserRole
 from shared.security import hash_password
@@ -73,6 +74,7 @@ class TenantCreated(BaseModel):
     tenant: TenantOut
     recruiter_email: str
     temp_password: str  # shown once
+    login_url: str  # built server-side from ROOT_DOMAIN (authoritative), e.g. https://acme.yourco.com
 
 
 def _serialize(db, tenant: Tenant, counts: dict[str, tuple[int, int, int]] | None = None) -> TenantOut:
@@ -137,6 +139,9 @@ def create_tenant(payload: TenantCreate) -> TenantCreated:
         tenant=out,
         recruiter_email=payload.recruiter_email,
         temp_password=temp_password,
+        # Built from the backend's ROOT_DOMAIN env (authoritative) — not the frontend build-time
+        # VITE_ROOT_DOMAIN — so it always reflects the deployed domain.
+        login_url=get_settings().tenant_frontend_base_url(payload.slug),
     )
 
 

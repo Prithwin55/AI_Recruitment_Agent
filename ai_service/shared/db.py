@@ -1,3 +1,4 @@
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -5,6 +6,8 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -248,6 +251,10 @@ def _backfill_tenancy() -> None:
 
 def init_db() -> None:
     from . import models  # noqa: F401  (ensure models are registered on Base)
+
+    # Loud on startup so you can confirm backend and ai_service point at the SAME file — if these
+    # two paths differ, resumes will sit at "queued" forever (each service polls a different DB).
+    logger.info("SQLite database: %s", get_settings().db_path)
 
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()

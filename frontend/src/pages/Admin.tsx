@@ -24,7 +24,6 @@ import {
   type ServiceUsage,
   type UsagePricing,
 } from '@/lib/api'
-import { tenantBaseUrl } from '@/lib/tenant'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -408,7 +407,7 @@ function TenantsManager() {
         email: res.recruiter_email,
         password: res.temp_password,
         slug: res.tenant.slug,
-        loginUrl: tenantBaseUrl(res.tenant.slug),
+        loginUrl: res.login_url, // from the backend's ROOT_DOMAIN env (authoritative)
       })
       setSlug('')
       setName('')
