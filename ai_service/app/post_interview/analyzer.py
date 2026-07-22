@@ -167,8 +167,12 @@ Now call record_interview_score with your final assessment."""
     return FinalInterviewScore(**dict(tool_use.input))
 
 
-async def run_post_interview_analysis(session_id: str) -> None:
-    await asyncio.sleep(_SENTIMENT_SETTLE_DELAY_S)
+async def run_post_interview_analysis(session_id: str, settle: bool = True) -> None:
+    # `settle` waits for the final turns' still-in-flight fire-and-forget sentiment to land before
+    # aggregating — needed right after a LIVE interview, but pointless when re-scoring an old one
+    # whose sentiment settled long ago (the startup/backlog rescorer passes settle=False).
+    if settle:
+        await asyncio.sleep(_SENTIMENT_SETTLE_DELAY_S)
 
     with session_scope() as db:
         session_row = db.get(InterviewSession, session_id)
