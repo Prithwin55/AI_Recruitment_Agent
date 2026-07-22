@@ -109,7 +109,12 @@ class Settings(BaseSettings):
     # --- Networking ---
     # URL and port are kept SEPARATE for each service: the URL holds only scheme + host (no port
     # baked in), and the port is its own value. Use the *_base_url properties below when you need
-    # the combined "url:port" address (e.g. CORS origins, the candidate interview link).
+    # the combined address (e.g. CORS origins, the candidate interview link).
+    #
+    # In production, set the *_URL to your domain (e.g. FRONTEND_URL=https://recruit.example.com)
+    # and the *_PORT to the port it's actually served on — 443 for https / 80 for http behind a
+    # reverse proxy. Those standard ports are OMITTED from the built URL, so the interview link
+    # comes out clean as https://recruit.example.com/interview/<token> (no :443).
     frontend_url: str = "http://localhost"
     frontend_port: int = 5173
     backend_url: str = "http://localhost"
@@ -117,17 +122,30 @@ class Settings(BaseSettings):
     ai_service_url: str = "http://localhost"
     ai_service_port: int = 8100
 
+    @staticmethod
+    def _join_host_port(url: str, port: int) -> str:
+        url = url.rstrip("/")
+        scheme = url.split("://", 1)[0].lower() if "://" in url else "http"
+        # Already carries an explicit ":port" -> trust it as-is.
+        if ":" in url.split("://", 1)[-1]:
+            return url
+        # Omit the port when it's the scheme default (or unset) so domain links stay clean.
+        default_port = 443 if scheme == "https" else 80
+        if not port or port == default_port:
+            return url
+        return f"{url}:{port}"
+
     @property
     def frontend_base_url(self) -> str:
-        return f"{self.frontend_url}:{self.frontend_port}"
+        return self._join_host_port(self.frontend_url, self.frontend_port)
 
     @property
     def backend_base_url(self) -> str:
-        return f"{self.backend_url}:{self.backend_port}"
+        return self._join_host_port(self.backend_url, self.backend_port)
 
     @property
     def ai_service_base_url(self) -> str:
-        return f"{self.ai_service_url}:{self.ai_service_port}"
+        return self._join_host_port(self.ai_service_url, self.ai_service_port)
 
     # --- Storage ---
     # The path is used exactly as given: an absolute path is used as-is; a relative path (e.g.
