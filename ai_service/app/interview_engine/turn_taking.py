@@ -67,7 +67,12 @@ class TurnTakingEngine:
     (delegated to the provider's endpointing/VAD — see SherpaOnnxProvider/AzureProvider),
     mute-gating, and sentence-level tracking of what the agent actually said."""
 
-    def __init__(self, provider: SpeechProvider, callbacks: TurnTakingCallbacks) -> None:
+    def __init__(
+        self,
+        provider: SpeechProvider,
+        callbacks: TurnTakingCallbacks,
+        end_of_turn_silence_ms: float = 2000.0,
+    ) -> None:
         self._provider = provider
         self._cb = callbacks
 
@@ -82,6 +87,16 @@ class TurnTakingEngine:
         self._sentence_flushed_events: dict[int, asyncio.Event] = {}
         self._pump_task: asyncio.Task | None = None
 
+        # End-of-turn fallback driven by TRANSCRIPT inactivity, independent of the acoustic VAD.
+        # The provider's webrtcvad-based UtteranceEnd needs a clean run of silence frames, which
+        # background noise / mic echo / a quiet mic can prevent — leaving recognized text sitting
+        # unflushed and the agent stuck "listening" forever. This timer re-arms on every candidate
+        # transcript event while LISTENING and, after `end_of_turn_silence_ms` of no new transcript
+        # activity, flushes the turn just like an UtteranceEnd would. Whichever signal fires first
+        # ends the turn; the other becomes a no-op (segments already flushed).
+        self._eot_silence_s = end_of_turn_silence_ms / 1000.0
+        self._eot_task: asyncio.Task | None = None
+
         # The diarization speaker id established as "the candidate" — set from the first real
         # candidate-turn final. Any later candidate-turn final dominated by a different speaker
         # (or containing 2+ speakers at once) means a second voice — see _check_multiple_voices.
@@ -92,6 +107,7 @@ class TurnTakingEngine:
         self._pump_task = asyncio.create_task(self._pump_events())
 
     async def stop(self) -> None:
+        self._cancel_eot_timer()
         if self._pump_task is not None:
             self._pump_task.cancel()
         await self._provider.close()
@@ -158,6 +174,45 @@ class TurnTakingEngine:
         if self._cb.on_agent_interrupted:
             await self._cb.on_agent_interrupted()
 
+    def _cancel_eot_timer(self) -> None:
+        if self._eot_task is not None:
+            self._eot_task.cancel()
+            self._eot_task = None
+
+    def _arm_eot_timer(self) -> None:
+        """(Re)start the transcript-inactivity end-of-turn timer. Called on every candidate
+        transcript event while LISTENING, so it fires only after the candidate has gone quiet."""
+        self._cancel_eot_timer()
+        self._eot_task = asyncio.create_task(self._eot_after_silence())
+
+    async def _eot_after_silence(self) -> None:
+        try:
+            await asyncio.sleep(self._eot_silence_s)
+        except asyncio.CancelledError:
+            return
+        self._eot_task = None  # clear before flushing so _cancel_eot_timer can't cancel us mid-run
+        await self._flush_candidate_turn()
+
+    async def _flush_candidate_turn(self) -> None:
+        """Close the candidate's turn: hand the accumulated transcript to the orchestrator so it
+        can generate the reply. Shared by the acoustic UtteranceEnd and the inactivity fallback —
+        whichever runs first flushes the segments; the other finds them empty and no-ops."""
+        self._cancel_eot_timer()
+        if self.state == TurnState.AGENT_SPEAKING:
+            # An UtteranceEnd while the agent speaks is just a spent noise/echo blip — cancel any
+            # half-formed barge-in and stay speaking (never treat it as end of a candidate turn).
+            self._pending_interruption = None
+            return
+        final_text = " ".join(self._candidate_final_segments).strip()
+        self._candidate_final_segments = []
+        if final_text and self._cb.on_candidate_final:
+            await self.begin_thinking()
+            # Dispatched as an independent task, NOT awaited here: on_candidate_final drives the
+            # whole Claude response + speak_sentence flow, which can run for the length of an
+            # entire agent turn. Awaiting it inline would block this loop from processing further
+            # provider events — including the SpeechStarted/Interim a genuine barge-in depends on.
+            asyncio.create_task(self._cb.on_candidate_final(final_text))
+
     async def _check_multiple_voices(self, event: FinalTranscriptEvent) -> None:
         """Integrity check on a candidate-turn final (only reached when the agent is NOT
         speaking). Two signals: (1) a single final containing 2+ speakers = people talking over
@@ -216,6 +271,9 @@ class TurnTakingEngine:
                     # given provider semantics, but stay silent rather than guess.
                     continue
 
+                # Candidate-turn interim: transcript activity, so (re)arm the inactivity fallback.
+                if self.state == TurnState.LISTENING:
+                    self._arm_eot_timer()
                 preview = " ".join([*self._candidate_final_segments, event.text]).strip()
                 if self._cb.on_candidate_partial:
                     await self._cb.on_candidate_partial(preview)
@@ -233,21 +291,12 @@ class TurnTakingEngine:
                 await self._check_multiple_voices(event)
                 if event.text:
                     self._candidate_final_segments.append(event.text)
+                # Transcript activity — (re)arm the inactivity fallback so the turn still ends if
+                # the acoustic VAD's UtteranceEnd never comes (noise/echo/quiet mic).
+                if self.state == TurnState.LISTENING:
+                    self._arm_eot_timer()
                 continue
 
             if isinstance(event, UtteranceEndEvent):
-                if self.state == TurnState.AGENT_SPEAKING:
-                    self._pending_interruption = None
-                    continue
-                final_text = " ".join(self._candidate_final_segments).strip()
-                self._candidate_final_segments = []
-                if final_text and self._cb.on_candidate_final:
-                    await self.begin_thinking()
-                    # Dispatched as an independent task, NOT awaited here: on_candidate_final
-                    # drives the whole Claude response + speak_sentence flow, which can run for
-                    # the length of an entire agent turn. Awaiting it inline would block this
-                    # loop from processing any further provider events — including the very
-                    # SpeechStarted/Interim events a genuine barge-in depends on — for that
-                    # entire duration.
-                    asyncio.create_task(self._cb.on_candidate_final(final_text))
+                await self._flush_candidate_turn()
                 continue

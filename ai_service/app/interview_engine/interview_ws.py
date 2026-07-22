@@ -98,6 +98,7 @@ class InterviewOrchestrator:
                 on_candidate_final=self._on_candidate_final,
                 on_multiple_voices=self._on_multiple_voices,
             ),
+            end_of_turn_silence_ms=get_settings().interview_end_of_turn_silence_ms,
         )
 
         self._responding_lock = asyncio.Lock()
