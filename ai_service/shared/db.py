@@ -171,6 +171,12 @@ def _drop_tenancy() -> None:
         # implicit transaction the pragma is silently ignored and FK enforcement stays on.
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            # CRITICAL: modern SQLite's ALTER TABLE RENAME also rewrites FK references in OTHER
+            # tables to the new name — so renaming interview_sessions -> _old would silently repoint
+            # transcript_turns/cheating_flags/interview_results at the _old table we then drop.
+            # legacy_alter_table=ON restores the old behavior: rename ONLY this table, leave every
+            # other object's references (pointing at the original name we recreate) untouched.
+            conn.exec_driver_sql("PRAGMA legacy_alter_table=ON")
             for t in _DETENANT_TABLES:
                 if t not in tables:
                     continue
@@ -228,6 +234,55 @@ def _drop_tenancy() -> None:
         raise
 
 
+def _repair_dangling_fk_refs() -> None:
+    """Self-heal any table whose foreign key still references a dropped `*__old` table — the fallout
+    of an earlier de-tenancy run that renamed a parent table before SQLite's legacy_alter_table fix
+    was in place (it rewrote children's FKs to the `__old` name we then dropped, so every insert into
+    those children fails with 'no such table … __old'). Rebuilds each affected table from the current
+    models (which carry the correct references). Idempotent: a no-op once nothing references `__old`."""
+    with engine.connect() as conn:
+        broken = [
+            name
+            for name, sql in conn.exec_driver_sql(
+                "SELECT name, sql FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+            if sql and "__old" in sql and name in Base.metadata.tables
+        ]
+    if not broken:
+        return
+
+    logger.info("Repairing dangling FK references on: %s", ", ".join(broken))
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            conn.exec_driver_sql("PRAGMA legacy_alter_table=ON")  # rename only, don't touch refs
+            for t in broken:
+                conn.exec_driver_sql(f'DROP TABLE IF EXISTS "{t}__fix"')
+                conn.exec_driver_sql(f'ALTER TABLE "{t}" RENAME TO "{t}__fix"')
+                for (idx_name,) in conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=:t AND sql IS NOT NULL",
+                    {"t": f"{t}__fix"},
+                ).fetchall():
+                    conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{idx_name}"')
+
+        Base.metadata.create_all(bind=engine)  # recreate with correct FK references
+
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            for t in broken:
+                old = f"{t}__fix"
+                cols = [r[1] for r in conn.exec_driver_sql(f'PRAGMA table_info("{t}")').fetchall()]
+                old_cols = {r[1] for r in conn.exec_driver_sql(f'PRAGMA table_info("{old}")').fetchall()}
+                common = [c for c in cols if c in old_cols]
+                cols_csv = ", ".join(f'"{c}"' for c in common)
+                conn.exec_driver_sql(f'INSERT INTO "{t}" ({cols_csv}) SELECT {cols_csv} FROM "{old}"')
+                conn.exec_driver_sql(f'DROP TABLE "{old}"')
+        logger.info("FK reference repair complete")
+    except Exception:
+        logger.exception("FK reference repair failed")
+        raise
+
+
 def init_db() -> None:
     from . import models  # noqa: F401  (ensure models are registered on Base)
 
@@ -238,4 +293,5 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()
     _drop_tenancy()
+    _repair_dangling_fk_refs()
     _create_analytics_indexes()
