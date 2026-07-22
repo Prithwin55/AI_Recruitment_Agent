@@ -3,10 +3,51 @@ outputs, shared between ai_service (producing them) and backend (rendering
 them in the recruiter portal API).
 """
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
+
+# Claude usually returns array fields as real JSON arrays, but occasionally emits them as a single
+# string instead — most often `<item>...</item>` markup, sometimes a newline/bullet list. A strict
+# `list[str]` then rejects the whole tool call and the scoring/parse fails. Coerce leniently.
+_ITEM_RE = re.compile(r"<item>\s*(.*?)\s*</item>", re.IGNORECASE | re.DOTALL)
+_BULLET_PREFIX_RE = re.compile(r"^[\s\-\*••\d.)]+")
 
 
-class ResumeScoreResult(BaseModel):
+def _coerce_str_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return []
+        items = _ITEM_RE.findall(s)  # <item>…</item> blocks, if any
+        if not items:
+            # Fall back to newline splitting, stripping leading bullets / numbering.
+            items = [_BULLET_PREFIX_RE.sub("", line).strip() for line in s.splitlines()]
+        cleaned = [i.strip() for i in items if i and i.strip()]
+        return cleaned or [s]
+    if isinstance(value, (list, tuple)):
+        return [str(x).strip() for x in value if x is not None and str(x).strip()]
+    s = str(value).strip()
+    return [s] if s else []
+
+
+class _LenientListModel(BaseModel):
+    """Base for Claude tool-output models: any of these array fields that arrives as a string is
+    coerced into a list of strings (see _coerce_str_list). check_fields=False so the one validator
+    covers whichever of these fields a given subclass actually declares."""
+
+    @field_validator(
+        "strengths", "weaknesses", "key_moments", "skills", "education", "gaps",
+        mode="before", check_fields=False,
+    )
+    @classmethod
+    def _coerce_lists(cls, v: object) -> list[str]:
+        return _coerce_str_list(v)
+
+
+class ResumeScoreResult(_LenientListModel):
     """Structured output of the single Phase-1 Claude call: extraction + JD scoring."""
 
     name: str | None = None
@@ -34,7 +75,7 @@ class SentimentSummary(BaseModel):
     negative_count: int
 
 
-class FinalInterviewScore(BaseModel):
+class FinalInterviewScore(_LenientListModel):
     """Structured output of the post-interview Claude scoring call."""
 
     summary: str

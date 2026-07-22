@@ -35,14 +35,22 @@ def _sweep_once() -> None:
                 if candidate is not None:
                     candidate.phase2_status = Phase2Status.NO_SHOW
 
-        # Abandoned mid-interview: started but never reached completion within the grace window.
+        # Abandoned mid-interview: started but never reached completion. An in-progress interview
+        # must be allowed its FULL scheduled duration before a still-ACTIVE session is treated as
+        # abandoned — plus the reconnect grace (for the candidate to hang up, or briefly drop and
+        # rejoin). Bounding by the grace ALONE expired live interviews mid-call: started_at is set
+        # once when the candidate clicks Start and never refreshed, so every interview older than
+        # the grace (default 2 min) got flipped to EXPIRED while it was still running.
         grace = timedelta(seconds=settings.reconnect_grace_seconds)
         active_sessions = (
             db.query(InterviewSession).filter(InterviewSession.token_status == TokenStatus.ACTIVE).all()
         )
         for session_row in active_sessions:
             started = session_row.started_at
-            if started is not None and now > _aware(started) + grace:
+            if started is None:
+                continue
+            max_active = timedelta(minutes=session_row.duration_minutes) + grace
+            if now > _aware(started) + max_active:
                 session_row.token_status = TokenStatus.EXPIRED
                 session_row.ended_at = now
                 candidate = db.get(Candidate, session_row.candidate_id)
