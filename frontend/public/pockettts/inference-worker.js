@@ -29,10 +29,28 @@ const HF_BASE = "https://huggingface.co";
 const PHONEMIZER_URL = "./phonemizer.min.js";
 const PHONEME_LANGUAGE = "en-us";
 const SAMPLE_RATE = 24000;
-// KittenTTS emits a short end-of-utterance artifact; the reference impl drops the final
-// 5000 samples (~208ms) of every chunk. Kept identical so prosody matches upstream.
-const TAIL_TRIM_SAMPLES = 5000;
-const MAX_CHUNK_CHARS = 400;
+// --- Low-latency streaming ---------------------------------------------------
+// KittenTTS renders a whole chunk in one forward pass, so time-to-first-audio == the
+// synth time of that chunk. To start speaking sooner we split each sentence into small
+// pieces (at clause boundaries, and by a word cap for long comma-free runs), synthesize
+// them in order, and stream each out immediately; the wrapper schedules them back-to-back
+// on the audio timeline so the rest is synthesized while the first piece is already
+// playing. Since synthesis is ~2x faster than real-time, playback stays ahead and smooth.
+//
+// Each piece is rendered as its own utterance, so it carries leading + trailing silence.
+// We trim each piece down to its actual speech (trimToSpeechCore) and re-insert a fixed,
+// natural clause pause (PIECE_PAUSE) between pieces — otherwise the stacked utterance
+// silences would add up to ~800ms gaps (the old "voice breaks / gaps" failure). A hard
+// word-count floor (STREAM_MIN_WORDS) keeps pieces long enough that edge-trimming never
+// clips a word. Set STREAM_MAX_WORDS very high (or STREAM_MIN_WORDS huge) to effectively
+// disable streaming and fall back to one-pass-per-sentence.
+const STREAM_MIN_WORDS = 4;   // never emit a piece shorter than this (tail would clip)
+const STREAM_MAX_WORDS = 9;   // split longer clauses at word boundaries for a faster start
+const EDGE_THRESHOLD = 0.015; // |sample| above this counts as speech (below ~= silence)
+const LEAD_KEEP_SAMPLES = Math.round(0.03 * SAMPLE_RATE);  // keep 30ms before first speech
+const TAIL_KEEP_SAMPLES = Math.round(0.04 * SAMPLE_RATE);  // keep 40ms after last speech
+const PIECE_PAUSE_SAMPLES = Math.round(0.16 * SAMPLE_RATE); // clause pause inserted between pieces
+const HEAD_LEADIN_SAMPLES = Math.round(0.04 * SAMPLE_RATE); // tiny lead-in before the first piece
 // Which KittenTTS voice the interviewer uses. Female by default (the previous Pocket
 // default 'cosette' was female too). The eight voices are expr-voice-{2..5}-{f,m};
 // swap DEFAULT_VOICE to try another — '-f' are female, '-m' are male.
@@ -114,28 +132,61 @@ function ensurePunctuation(text) {
   return /[.!?,;:]$/.test(trimmed) ? trimmed : `${trimmed},`;
 }
 
-function chunkText(text, maxLen = MAX_CHUNK_CHARS) {
-  const chunks = [];
-  for (const sentence of text.split(SENTENCE_BREAK_REGEX)) {
+function countWords(text) {
+  return (text.trim().match(/\S+/g) || []).length;
+}
+
+// Split one long, comma-free clause into <= STREAM_MAX_WORDS word runs (so a single long
+// clause still starts quickly), never leaving a < STREAM_MIN_WORDS remainder.
+function splitLongClauseByWords(clause) {
+  const words = clause.trim().match(/\S+/g) || [];
+  if (words.length <= STREAM_MAX_WORDS) return [clause.trim()];
+  const out = [];
+  for (let i = 0; i < words.length; ) {
+    let take = Math.min(STREAM_MAX_WORDS, words.length - i);
+    const remainder = words.length - i - take;
+    if (remainder > 0 && remainder < STREAM_MIN_WORDS) take = words.length - i - STREAM_MIN_WORDS;
+    out.push(words.slice(i, i + take).join(" "));
+    i += take;
+  }
+  return out;
+}
+
+// One sentence -> ordered speakable pieces: break at clause punctuation, cap long clauses
+// by word count, then merge neighbours so every piece has >= STREAM_MIN_WORDS words.
+function splitSentenceIntoPieces(sentence) {
+  const clauses = sentence.split(/(?<=[,;:—–])\s+/).map((s) => s.trim()).filter(Boolean);
+  const units = [];
+  for (const clause of clauses) for (const unit of splitLongClauseByWords(clause)) units.push(unit);
+
+  const pieces = [];
+  let current = "";
+  for (const unit of units) {
+    current = current ? `${current} ${unit}` : unit;
+    if (countWords(current) >= STREAM_MIN_WORDS) {
+      pieces.push(current);
+      current = "";
+    }
+  }
+  if (current) {
+    if (pieces.length && countWords(current) < STREAM_MIN_WORDS) pieces[pieces.length - 1] += ` ${current}`;
+    else pieces.push(current);
+  }
+  return pieces.length ? pieces : [sentence.trim()];
+}
+
+// Whole (already-cleaned) utterance -> flat ordered list of pieces to stream.
+function splitIntoStreamPieces(cleanText) {
+  const pieces = [];
+  for (const sentence of cleanText.split(SENTENCE_BREAK_REGEX)) {
     const value = sentence.trim();
     if (!value) continue;
-    if (value.length <= maxLen) {
-      chunks.push(ensurePunctuation(value));
-      continue;
+    for (const piece of splitSentenceIntoPieces(value)) {
+      const p = ensurePunctuation(piece);
+      if (p) pieces.push(p);
     }
-    let current = "";
-    for (const word of value.split(/\s+/)) {
-      const next = current ? `${current} ${word}` : word;
-      if (next.length <= maxLen) {
-        current = next;
-      } else {
-        if (current) chunks.push(ensurePunctuation(current));
-        current = word;
-      }
-    }
-    if (current) chunks.push(ensurePunctuation(current));
   }
-  return chunks;
+  return pieces;
 }
 
 // ---- tokenization -----------------------------------------------------------
@@ -296,8 +347,26 @@ async function loadEngine() {
 }
 
 // ---- generation -------------------------------------------------------------
-async function synthesizeChunk(chunk, voice, speedPrior) {
-  const segments = await phonemize(chunk, PHONEME_LANGUAGE);
+// Trim a rendered piece down to its actual speech (drop the utterance-final artifact and
+// the utterance-initial silence), keeping small margins so onsets/releases aren't clipped.
+function trimToSpeechCore(audio) {
+  let start = -1;
+  for (let i = 0; i < audio.length; i++) {
+    if (Math.abs(audio[i]) > EDGE_THRESHOLD) { start = i; break; }
+  }
+  if (start < 0) return new Float32Array(0); // all silence
+  let end = audio.length - 1;
+  for (let i = audio.length - 1; i >= 0; i--) {
+    if (Math.abs(audio[i]) > EDGE_THRESHOLD) { end = i; break; }
+  }
+  const from = Math.max(0, start - LEAD_KEEP_SAMPLES);
+  const to = Math.min(audio.length, end + TAIL_KEEP_SAMPLES + 1);
+  return audio.slice(from, to); // fresh, transferable buffer
+}
+
+// Synthesize one piece and return just its speech core (no surrounding silence).
+async function synthesizePieceCore(piece, voice, speedPrior) {
+  const segments = await phonemize(piece, PHONEME_LANGUAGE);
   // eSpeak returns one string per clause (split on punctuation, which it drops). Rejoin
   // with ", " so the tokenizer sees the clause pauses — matching the reference Python's
   // preserve_punctuation output. (Taking only segments[0] would drop text after a comma.)
@@ -305,7 +374,7 @@ async function synthesizeChunk(chunk, voice, speedPrior) {
   const tokens = phonemesToTokens(phonemeString);
   if (tokens.length <= 3) return null; // nothing but boundary tokens
 
-  const style = pickStyle(voice, chunk.length);
+  const style = pickStyle(voice, piece.length);
   const feeds = {
     input_ids: new ort.Tensor("int64", BigInt64Array.from(tokens, (t) => BigInt(t)), [1, tokens.length]),
     style: new ort.Tensor("float32", style, [1, style.length]),
@@ -315,9 +384,18 @@ async function synthesizeChunk(chunk, voice, speedPrior) {
   const waveform = outputs.waveform || outputs[session.outputNames[0]];
   let audio = waveform.data;
   if (!(audio instanceof Float32Array)) audio = Float32Array.from(audio);
-  // Drop the end-of-utterance artifact (slice returns a fresh, transferable buffer).
-  const end = audio.length > TAIL_TRIM_SAMPLES ? audio.length - TAIL_TRIM_SAMPLES : audio.length;
-  return audio.slice(0, end);
+  return trimToSpeechCore(audio);
+}
+
+// Concatenate the speech core with a lead-in / clause pause so pieces butt together
+// smoothly on the wrapper's timeline. Returns a fresh transferable Float32Array.
+function buildChunk(core, isFirst, isLast) {
+  const lead = isFirst ? HEAD_LEADIN_SAMPLES : 0;
+  const pause = isLast ? 0 : PIECE_PAUSE_SAMPLES;
+  if (!lead && !pause) return core;
+  const out = new Float32Array(lead + core.length + pause);
+  out.set(core, lead);
+  return out;
 }
 
 async function startGeneration(text, voiceKey) {
@@ -329,28 +407,27 @@ async function startGeneration(text, voiceKey) {
     const voice = voices[voiceKey];
     if (!voice) throw new Error(`Voice '${voiceKey}' is not available`);
     const speedPrior = speedPriors[voiceKey] ?? 1;
-    const chunks = chunkText(preprocess(text));
+    const pieces = splitIntoStreamPieces(preprocess(text));
 
-    let isFirst = true;
-    for (let i = 0; i < chunks.length; i++) {
+    for (let i = 0; i < pieces.length; i++) {
       if (!isGenerating) break;
-      const audio = await synthesizeChunk(chunks[i], voice, speedPrior);
-      if (!isGenerating || !audio || audio.length === 0) continue;
+      const core = await synthesizePieceCore(pieces[i], voice, speedPrior);
+      if (!isGenerating || !core || core.length === 0) continue;
 
+      const chunk = buildChunk(core, i === 0, i === pieces.length - 1);
       postMessage(
         {
           type: "audio_chunk",
-          data: audio,
+          data: chunk,
           metrics: {
-            chunkDuration: audio.length / SAMPLE_RATE,
-            isFirst,
-            isLast: i === chunks.length - 1,
+            chunkDuration: chunk.length / SAMPLE_RATE,
+            isFirst: i === 0,
+            isLast: i === pieces.length - 1,
           },
         },
-        [audio.buffer]
+        [chunk.buffer]
       );
-      isFirst = false;
-      // Yield so a 'stop' (barge-in) posted mid-utterance is handled between sentences.
+      // Yield so a 'stop' (barge-in) posted mid-utterance is handled between pieces.
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   } catch (err) {
