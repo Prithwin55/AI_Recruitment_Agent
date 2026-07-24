@@ -19,11 +19,11 @@
 const ENGINE_BASE = '/pockettts'
 const SAMPLE_RATE = 24000
 
-// Which Pocket TTS voice the interviewer uses. Available English voices:
-//   female: alba, azelma, cosette, eponine, fantine   male: javert, jean, marius
-// Change this to try a different one — they vary a lot in how natural they sound. If the value
-// isn't in the loaded bundle we fall back to the bundle's own default.
-const PREFERRED_VOICE = 'cosette'
+// Which KittenTTS voice the interviewer uses. The eight voices are expr-voice-{2..5}-{f,m}
+// ('-f' female, '-m' male). Change this to try a different one — they vary in how natural they
+// sound. If the value isn't in the loaded bundle we fall back to the engine's own default
+// (also a female voice). The engine default can also be changed in inference-worker.js.
+const PREFERRED_VOICE = 'expr-voice-5-f'
 // Start speaking once this much audio is buffered ahead, rather than waiting for the whole
 // sentence. Small enough to feel responsive/conversational, large enough to ride out brief
 // inference dips or main-thread stalls (the MediaPipe proctoring runs on the main thread).
@@ -53,7 +53,7 @@ export class PocketTts {
   private speakResolve: (() => void) | null = null
 
   /** Loads the WASM engine + models. Rejects if anything fails so the caller can fall back.
-   * The first call downloads the model bundle (~180MB, then browser-cached), so it can take a
+   * The first call downloads the model bundle (~27MB, then browser-cached), so it can take a
    * while on a cold cache — surface a "preparing voice" state to the candidate if you show one. */
   async init(): Promise<void> {
     this.audioContext = new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' })
