@@ -263,6 +263,14 @@ export async function listCandidates(
   return data
 }
 
+// Final post-interview shortlist for a recruitment — candidates whose interview was scored
+// `shortlist`. Separate from `listCandidates`, whose `interviews` set is everyone advanced from
+// resume screening regardless of interview outcome.
+export async function listShortlisted(recruitmentId: string): Promise<Candidate[]> {
+  const { data } = await api.get<Candidate[]>(`/recruitments/${recruitmentId}/shortlisted`)
+  return data
+}
+
 export async function bulkUploadResumes(recruitmentId: string, files: File[]): Promise<BulkUploadResult> {
   const formData = new FormData()
   for (const file of files) {

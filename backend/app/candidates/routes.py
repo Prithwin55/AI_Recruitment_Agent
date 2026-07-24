@@ -8,6 +8,7 @@ from shared.db import session_scope
 from shared.models import (
     Candidate,
     CheatingFlag,
+    FinalDecision,
     InterviewResult,
     InterviewSession,
     Phase1Decision,
@@ -230,6 +231,44 @@ def list_candidates(
             pool_page=pool_page,
             page_size=page_size,
         )
+
+
+@router.get("/recruitments/{recruitment_id}/shortlisted", response_model=list[CandidateOut])
+def list_shortlisted(
+    recruitment_id: str,
+    current_user: User = Depends(get_current_user),
+) -> list[CandidateOut]:
+    """Final post-interview shortlist for a recruitment: candidates whose completed interview was
+    scored `shortlist`. Ordered best interview score first. Distinct from the "Interviews" section,
+    which lists everyone advanced from resume screening regardless of interview outcome."""
+    with session_scope() as db:
+        recruitment = db.get(Recruitment, recruitment_id)
+        if recruitment is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recruitment not found")
+
+        candidates = (
+            db.query(Candidate)
+            .join(InterviewSession, InterviewSession.candidate_id == Candidate.id)
+            .join(InterviewResult, InterviewResult.interview_session_id == InterviewSession.id)
+            .filter(
+                Candidate.recruitment_id == recruitment_id,
+                InterviewResult.decision == FinalDecision.SHORTLIST,
+            )
+            .distinct()
+            .all()
+        )
+
+        # Reuse the batched serializer so each row carries its interview score/decision, then order
+        # by interview score (highest first) with a stable name/id tiebreak.
+        serialized = _serialize_with_interview_data(db, candidates)
+        rows = list(serialized.values())
+        rows.sort(
+            key=lambda c: (
+                -(c.interview_score if c.interview_score is not None else 0.0),
+                (c.name or c.original_filename or "").lower(),
+            )
+        )
+        return rows
 
 
 @router.patch("/candidates/{candidate_id}/decision", response_model=CandidateOut)

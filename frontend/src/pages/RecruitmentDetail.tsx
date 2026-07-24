@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarClock, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Search, ShieldAlert, UploadCloud } from 'lucide-react'
+import { CalendarClock, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, ListChecks, Search, ShieldAlert, UploadCloud, X } from 'lucide-react'
 import {
   bulkUploadResumes,
   CHEATING_FLAG_LABELS,
+  fetchResumeBlob,
   getRecruitment,
   listCandidates,
+  listShortlisted,
   scheduleInterviews,
   updateCandidateDecision,
   type Candidate,
@@ -27,6 +29,7 @@ export default function RecruitmentDetail() {
   const queryClient = useQueryClient()
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [shortlistOpen, setShortlistOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [interviewsPage, setInterviewsPage] = useState(1)
   const [poolPage, setPoolPage] = useState(1)
@@ -67,6 +70,15 @@ export default function RecruitmentDetail() {
       return inFlight > 0 ? 3000 : false
     },
   })
+
+  // Final post-interview shortlist — drives the side tab count and the drawer. Kept in sync as
+  // interviews complete; a light poll while any interview is still in progress.
+  const { data: shortlisted } = useQuery({
+    queryKey: ['recruitments', recruitmentId, 'shortlisted'],
+    queryFn: () => listShortlisted(recruitmentId),
+    refetchInterval: () => ((recruitment?.counts.interview_in_progress ?? 0) > 0 ? 5000 : false),
+  })
+  const shortlistedCount = shortlisted?.length ?? 0
 
   const uploadMutation = useMutation({
     mutationFn: (files: File[]) => bulkUploadResumes(recruitmentId, files),
@@ -124,6 +136,7 @@ export default function RecruitmentDetail() {
   }
 
   return (
+    <>
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">{recruitment.title}</h1>
@@ -393,6 +406,15 @@ export default function RecruitmentDetail() {
         </CardContent>
       </Card>
     </div>
+
+    <ShortlistPanel
+      open={shortlistOpen}
+      onOpen={() => setShortlistOpen(true)}
+      onClose={() => setShortlistOpen(false)}
+      candidates={shortlisted ?? []}
+      count={shortlistedCount}
+    />
+    </>
   )
 }
 
@@ -404,6 +426,151 @@ function StatTile({ label, value, tone }: { label: string; value: number; tone?:
         {value}
       </p>
     </div>
+  )
+}
+
+// A tab pinned to the right edge that slides out a drawer of the final (post-interview) shortlist.
+// Each row links to the candidate's full detail page and offers a one-click resume download.
+function ShortlistPanel({
+  open,
+  onOpen,
+  onClose,
+  candidates,
+  count,
+}: {
+  open: boolean
+  onOpen: () => void
+  onClose: () => void
+  candidates: Candidate[]
+  count: number
+}) {
+  return (
+    <>
+      {/* Edge tab — always visible; hidden while the drawer is open */}
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`Show shortlisted candidates (${count})`}
+        className={cn(
+          'fixed right-0 top-1/3 z-30 flex items-center gap-2 rounded-l-lg border border-r-0 border-border bg-primary px-3 py-3 text-sm font-medium text-primary-foreground shadow-lg transition-transform hover:px-4',
+          open && 'pointer-events-none translate-x-full opacity-0',
+        )}
+      >
+        <ListChecks className="h-4 w-4" />
+        <span className="[writing-mode:vertical-rl] rotate-180">Shortlisted</span>
+        <span className="rounded-full bg-primary-foreground/20 px-1.5 py-0.5 text-xs tabular-nums">{count}</span>
+      </button>
+
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        className={cn(
+          'fixed inset-0 z-40 bg-black/40 transition-opacity',
+          open ? 'opacity-100' : 'pointer-events-none opacity-0',
+        )}
+      />
+
+      {/* Drawer */}
+      <aside
+        role="dialog"
+        aria-label="Shortlisted candidates"
+        className={cn(
+          'fixed right-0 top-0 z-50 flex h-svh w-full max-w-md flex-col border-l border-border bg-card shadow-xl transition-transform',
+          open ? 'translate-x-0' : 'translate-x-full',
+        )}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <div>
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+              <ListChecks className="h-5 w-5 text-primary" />
+              Shortlisted
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              {count} candidate{count === 1 ? '' : 's'} recommended after interview
+            </p>
+          </div>
+          <Button size="icon" variant="ghost" onClick={onClose} aria-label="Close">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {candidates.length === 0 ? (
+            <p className="px-5 py-6 text-sm text-muted-foreground">
+              No candidates have been shortlisted yet. Anyone the AI recommends after completing their
+              interview will appear here.
+            </p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {candidates.map((candidate) => (
+                <ShortlistRow key={candidate.id} candidate={candidate} onNavigate={onClose} />
+              ))}
+            </ul>
+          )}
+        </div>
+      </aside>
+    </>
+  )
+}
+
+function ShortlistRow({ candidate, onNavigate }: { candidate: Candidate; onNavigate: () => void }) {
+  const [downloading, setDownloading] = useState(false)
+  const [error, setError] = useState(false)
+
+  async function handleDownload() {
+    setDownloading(true)
+    setError(false)
+    try {
+      const blob = await fetchResumeBlob(candidate.id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = candidate.original_filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      setError(true)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return (
+    <li className="flex items-center justify-between gap-3 px-5 py-4">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <Link
+            to={`/candidates/${candidate.id}`}
+            onClick={onNavigate}
+            className="truncate font-medium text-foreground hover:text-primary hover:underline"
+          >
+            {candidate.name ?? candidate.original_filename}
+          </Link>
+          {candidate.interview_score !== null && (
+            <span className="shrink-0 tabular-nums text-sm font-semibold text-primary">
+              {Math.round(candidate.interview_score)}
+            </span>
+          )}
+        </div>
+        <p className="truncate text-xs text-muted-foreground">
+          {candidate.email ?? candidate.original_filename}
+          {error && <span className="text-destructive"> — download failed</span>}
+        </p>
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        className="shrink-0 gap-1.5"
+        disabled={downloading}
+        onClick={handleDownload}
+        title="Download resume"
+      >
+        <Download className="h-4 w-4" />
+        {downloading ? '…' : 'Resume'}
+      </Button>
+    </li>
   )
 }
 
