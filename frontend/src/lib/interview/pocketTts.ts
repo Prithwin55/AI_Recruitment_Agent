@@ -56,6 +56,19 @@ export class PocketTts {
    * The first call downloads the model bundle (~180MB, then browser-cached), so it can take a
    * while on a cold cache — surface a "preparing voice" state to the candidate if you show one. */
   async init(): Promise<void> {
+    // Cross-origin isolation is what lets the ONNX worker run multi-threaded (see
+    // inference-worker.js: numThreads = crossOriginIsolated ? nCores : 1). Without it synthesis
+    // runs single-threaded and is slower than real-time, so the agent voice breaks up / sounds
+    // robotic on playback. This is an operational/serving problem, not a code one — surface it
+    // loudly rather than degrading in silence. Requires BOTH a secure context (HTTPS/localhost)
+    // AND COOP:same-origin + COEP:credentialless headers (see vite.config.ts / nginx.conf / Caddyfile).
+    if (!self.crossOriginIsolated) {
+      console.warn(
+        '[tts] self.crossOriginIsolated === false — Pocket TTS will run SINGLE-THREADED and the ' +
+          'agent voice will break up / sound robotic. Serve this page over HTTPS with ' +
+          'Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: credentialless.',
+      )
+    }
     this.audioContext = new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' })
     this.analyserNode = this.audioContext.createAnalyser()
     this.analyserNode.fftSize = 256
