@@ -68,6 +68,7 @@ export class CheatingDetector {
   private landmarker: FaceLandmarker | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
+  private paused = false
   private lastVideoTime = -1
   private readonly cond: Record<CheatKind, ConditionState> = {
     multiple_faces: { since: null, emitted: false },
@@ -114,13 +115,32 @@ export class CheatingDetector {
     this.landmarker = null
   }
 
+  /** Temporarily suspend the detection loop without tearing down the model. Used to stop
+   * MediaPipe from competing for the main thread while the agent's in-browser TTS is actively
+   * scheduling audio — running both at once (heaviest with 2+ faces tracked) starves the audio
+   * scheduler and makes the agent voice choppy. Proctoring resumes for the candidate's turn,
+   * which is when it actually matters. Resetting the in-progress condition windows means the
+   * paused gap never counts toward a sustained detection. */
+  setPaused(paused: boolean): void {
+    if (this.paused === paused) return
+    this.paused = paused
+    if (paused) {
+      for (const kind of Object.keys(this.cond) as CheatKind[]) {
+        this.cond[kind].since = null
+        this.cond[kind].emitted = false
+      }
+    }
+  }
+
   private loop = (): void => {
     if (this.stopped || !this.landmarker) return
-    try {
-      this.detectOnce()
-    } catch (err) {
-      // A single bad frame must never kill the loop or the interview.
-      console.warn('[proctoring] frame skipped', err)
+    if (!this.paused) {
+      try {
+        this.detectOnce()
+      } catch (err) {
+        // A single bad frame must never kill the loop or the interview.
+        console.warn('[proctoring] frame skipped', err)
+      }
     }
     this.timer = setTimeout(this.loop, DETECT_INTERVAL_MS)
   }

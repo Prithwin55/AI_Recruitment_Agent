@@ -155,9 +155,15 @@ export default function MeetingRoom({
             setReady(true)
             break
           case 'agent_speaking_start':
+            // Pause video proctoring while the agent speaks: MediaPipe and the in-browser TTS
+            // both run on the main thread, and running them together (heaviest with 2+ faces on
+            // camera) starves the audio scheduler and makes the voice choppy. Proctoring resumes
+            // for the candidate's turn — the time it actually matters.
+            detectorRef.current?.setPaused(true)
             setOrbState('speaking')
             break
           case 'agent_speaking_end':
+            detectorRef.current?.setPaused(false)
             setOrbState('listening')
             break
           case 'agent_interrupted':
@@ -166,6 +172,8 @@ export default function MeetingRoom({
             speechGenRef.current++
             ttsRef.current?.stop()
             player.clear()
+            // Agent stopped speaking — the candidate has the floor, so resume proctoring.
+            detectorRef.current?.setPaused(false)
             setOrbState('interrupted')
             setTimeout(() => setOrbState((s) => (s === 'interrupted' ? 'listening' : s)), 450)
             break
