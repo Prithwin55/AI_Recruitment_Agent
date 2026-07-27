@@ -64,6 +64,9 @@ export default function MeetingRoom({
   const speechGenRef = useRef(0)
   const socketRef = useRef<InterviewSocket | null>(null)
   const mutedRef = useRef(false)
+  // True while the interviewer voice is still being prepared. The candidate's mic is held
+  // muted for this window (nothing is captured or sent) and released once the voice is ready.
+  const voicePreparingRef = useRef(false)
   const hasEndedRef = useRef(false)
   const finishRef = useRef<((reason: string) => void) | null>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
@@ -116,7 +119,11 @@ export default function MeetingRoom({
       if (language === 'en') {
         const pocket = new PocketTts()
         ttsRef.current = pocket
+        // Hold the mic muted while the voice model loads: gate the sender AND disable the
+        // audio track so nothing is captured during the "Preparing voice" window.
+        voicePreparingRef.current = true
         setTtsLoading(true)
+        stream.getAudioTracks().forEach((t) => (t.enabled = false))
         ttsReadyRef.current = pocket
           .init()
           .catch(async (err) => {
@@ -127,6 +134,9 @@ export default function MeetingRoom({
             ttsRef.current = fallback
           })
           .finally(() => {
+            // Voice is ready — release the mic, unless the candidate manually muted meanwhile.
+            voicePreparingRef.current = false
+            streamRef.current?.getAudioTracks().forEach((t) => (t.enabled = !mutedRef.current))
             if (!cancelled) setTtsLoading(false)
           })
       }
@@ -245,7 +255,7 @@ export default function MeetingRoom({
       socketRef.current = socket
 
       const mic = await startMicCapture(stream, (chunk) => {
-        if (!mutedRef.current) socket.sendAudio(chunk)
+        if (!mutedRef.current && !voicePreparingRef.current) socket.sendAudio(chunk)
       })
       if (cancelled) {
         mic.stop()
@@ -403,8 +413,21 @@ export default function MeetingRoom({
 
       <footer className="flex items-center justify-center gap-4 border-t border-border px-6 py-4">
         <video ref={videoRef} autoPlay muted playsInline className="h-16 w-24 rounded-md object-cover" />
-        <Button variant={muted ? 'destructive' : 'outline'} size="icon" onClick={toggleMute} className="rounded-full">
-          {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+        <Button
+          variant={muted || ttsLoading ? 'destructive' : 'outline'}
+          size="icon"
+          onClick={toggleMute}
+          disabled={ttsLoading}
+          className="rounded-full"
+          title={
+            ttsLoading
+              ? 'Mic is muted while the interviewer’s voice is preparing'
+              : muted
+                ? 'Unmute'
+                : 'Mute'
+          }
+        >
+          {muted || ttsLoading ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
         </Button>
         <Button
           variant="destructive"

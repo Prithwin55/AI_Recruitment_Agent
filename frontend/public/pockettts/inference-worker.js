@@ -29,35 +29,45 @@ const HF_BASE = "https://huggingface.co";
 const PHONEMIZER_URL = "./phonemizer.min.js";
 const PHONEME_LANGUAGE = "en-us";
 const SAMPLE_RATE = 24000;
-// --- Low-latency streaming ---------------------------------------------------
+// --- Low-latency streaming (BALANCED / clause-only) --------------------------
 // KittenTTS renders a whole chunk in one forward pass, so time-to-first-audio == the
-// synth time of that chunk. To start speaking sooner we split each sentence into small
-// pieces (at clause boundaries, and by a word cap for long comma-free runs), synthesize
-// them in order, and stream each out immediately; the wrapper schedules them back-to-back
-// on the audio timeline so the rest is synthesized while the first piece is already
-// playing. Since synthesis is ~2x faster than real-time, playback stays ahead and smooth.
+// synth time of that chunk. To start speaking sooner we split each sentence into pieces,
+// synthesize them in order, and stream each out immediately; the wrapper schedules them
+// back-to-back on the audio timeline so the rest is synthesized while the first piece is
+// already playing. Synthesis is ~2x faster than real-time, so playback stays ahead.
 //
-// Each piece is rendered as its own utterance, so it carries leading + trailing silence.
-// We trim each piece down to its actual speech (trimToSpeechCore) and re-insert a fixed,
-// natural clause pause (PIECE_PAUSE) between pieces — otherwise the stacked utterance
-// silences would add up to ~800ms gaps (the old "voice breaks / gaps" failure). A hard
-// word-count floor (STREAM_MIN_WORDS) keeps pieces long enough that edge-trimming never
-// clips a word. Set STREAM_MAX_WORDS very high (or STREAM_MIN_WORDS huge) to effectively
-// disable streaming and fall back to one-pass-per-sentence.
-const STREAM_MIN_WORDS = 4;   // never emit a piece shorter than this (tail would clip)
-const STREAM_MAX_WORDS = 9;   // split longer clauses at word boundaries for a faster start
-const EDGE_THRESHOLD = 0.015; // |sample| above this counts as speech (below ~= silence)
+// TRADE-OFF: each piece is rendered as its OWN utterance, so it has no shared intonation with
+// its neighbours — the more (and the smaller) the pieces, the more clipped/robotic it sounds;
+// but the bigger the first piece, the longer before any sound comes out ("laggy"). The balance:
+// keep the FIRST piece small (FIRST_MAX_WORDS) so speech starts quickly, then use FULL clauses
+// (up to the big STREAM_MAX_WORDS cap) for everything after — so only the opener may land on a
+// mid-phrase seam, and only when the first clause is long. Levers: lower FIRST_MAX_WORDS for an
+// even snappier start; raise STREAM_MIN_WORDS above any real sentence length to synthesize each
+// sentence in one pass (most natural, slowest start); lower STREAM_MAX_WORDS to split later
+// clauses too (snappier mid-sentence, slightly more robotic).
+//
+// Each isolated piece carries leading + trailing silence; naively concatenating them stacks
+// those into ~800ms gaps (the old "voice breaks" failure). So trimToSpeechCore() trims each
+// piece to its actual speech and buildChunk() re-inserts a fixed PIECE_PAUSE clause pause.
+// The STREAM_MIN_WORDS floor keeps pieces long enough that edge-trimming never clips a word.
+const STREAM_MIN_WORDS = 4;    // never emit a piece shorter than this (tail would clip)
+const FIRST_MAX_WORDS = 6;     // cap the first piece so the interviewer starts talking fast
+const STREAM_MAX_WORDS = 40;   // later pieces are clause-only; only splits absurdly long runs
+// Playback speed passed to the model (higher = faster). The model config suggests ~0.8 per
+// voice, but that renders the default voice a touch slow/laggy, so we nudge it up. Raise toward
+// 1.1 for snappier delivery, lower toward 0.8 for a more deliberate pace.
+const SPEECH_SPEED = 1.1;
+const EDGE_THRESHOLD = 0.015;  // |sample| above this counts as speech (below ~= silence)
 const LEAD_KEEP_SAMPLES = Math.round(0.03 * SAMPLE_RATE);  // keep 30ms before first speech
 const TAIL_KEEP_SAMPLES = Math.round(0.04 * SAMPLE_RATE);  // keep 40ms after last speech
 const PIECE_PAUSE_SAMPLES = Math.round(0.16 * SAMPLE_RATE); // clause pause inserted between pieces
 const HEAD_LEADIN_SAMPLES = Math.round(0.04 * SAMPLE_RATE); // tiny lead-in before the first piece
-// Which KittenTTS voice the interviewer uses. Female by default (the previous Pocket
-// default 'cosette' was female too). The eight voices are expr-voice-{2..5}-{f,m};
+// Which KittenTTS voice the interviewer uses. The eight voices are expr-voice-{2..5}-{f,m};
 // swap DEFAULT_VOICE to try another — '-f' are female, '-m' are male.
-const DEFAULT_VOICE = "expr-voice-5-f";
+const DEFAULT_VOICE = "expr-voice-2-f";
 // Advertised to the wrapper female-first, so its fallback default is a female voice.
 const VOICE_KEYS = [
-  "expr-voice-5-f", "expr-voice-4-f", "expr-voice-3-f", "expr-voice-2-f",
+  "expr-voice-2-f", "expr-voice-3-f", "expr-voice-4-f", "expr-voice-5-f",
   "expr-voice-5-m", "expr-voice-4-m", "expr-voice-3-m", "expr-voice-2-m",
 ];
 
@@ -75,7 +85,6 @@ let ort = null;
 let session = null;
 let phonemize = null;
 let voices = {};
-let speedPriors = {};
 let voiceAliases = {};
 let isReady = false;
 let isGenerating = false;
@@ -132,47 +141,42 @@ function ensurePunctuation(text) {
   return /[.!?,;:]$/.test(trimmed) ? trimmed : `${trimmed},`;
 }
 
-function countWords(text) {
-  return (text.trim().match(/\S+/g) || []).length;
+function isClauseEnd(word) {
+  return /[,;:—–]$/.test(word);
 }
 
-// Split one long, comma-free clause into <= STREAM_MAX_WORDS word runs (so a single long
-// clause still starts quickly), never leaving a < STREAM_MIN_WORDS remainder.
-function splitLongClauseByWords(clause) {
-  const words = clause.trim().match(/\S+/g) || [];
-  if (words.length <= STREAM_MAX_WORDS) return [clause.trim()];
-  const out = [];
-  for (let i = 0; i < words.length; ) {
-    let take = Math.min(STREAM_MAX_WORDS, words.length - i);
-    const remainder = words.length - i - take;
-    if (remainder > 0 && remainder < STREAM_MIN_WORDS) take = words.length - i - STREAM_MIN_WORDS;
-    out.push(words.slice(i, i + take).join(" "));
-    i += take;
+// Pick the end index (exclusive) of a piece starting at `from`: stop at a clause boundary once
+// we have >= STREAM_MIN_WORDS words, otherwise at `maxWords`; never leave a < MIN remainder.
+function pieceEnd(words, from, maxWords) {
+  let end = -1;
+  for (let j = from + 1; j <= words.length; j++) {
+    const taken = j - from;
+    if (taken >= STREAM_MIN_WORDS && isClauseEnd(words[j - 1])) { end = j; break; }
+    if (taken >= maxWords) { end = j; break; }
   }
-  return out;
+  if (end < 0) end = words.length;
+  const remainder = words.length - end;
+  if (remainder > 0 && remainder < STREAM_MIN_WORDS) end = words.length;
+  return end;
 }
 
-// One sentence -> ordered speakable pieces: break at clause punctuation, cap long clauses
-// by word count, then merge neighbours so every piece has >= STREAM_MIN_WORDS words.
+// One sentence -> ordered speakable pieces. The FIRST piece is kept small (FIRST_MAX_WORDS) so
+// the interviewer starts talking quickly; every following piece is a full clause (up to the big
+// STREAM_MAX_WORDS cap), so past the opener the speech is natural. Only the opener may fall on a
+// mid-phrase boundary, and only when the first clause is long — i.e. at most one such seam.
 function splitSentenceIntoPieces(sentence) {
-  const clauses = sentence.split(/(?<=[,;:—–])\s+/).map((s) => s.trim()).filter(Boolean);
-  const units = [];
-  for (const clause of clauses) for (const unit of splitLongClauseByWords(clause)) units.push(unit);
-
+  const words = sentence.match(/\S+/g) || [];
+  if (words.length <= STREAM_MIN_WORDS) return [sentence.trim()];
   const pieces = [];
-  let current = "";
-  for (const unit of units) {
-    current = current ? `${current} ${unit}` : unit;
-    if (countWords(current) >= STREAM_MIN_WORDS) {
-      pieces.push(current);
-      current = "";
-    }
+  let i = 0;
+  let first = true;
+  while (i < words.length) {
+    const end = pieceEnd(words, i, first ? FIRST_MAX_WORDS : STREAM_MAX_WORDS);
+    pieces.push(words.slice(i, end).join(" "));
+    i = end;
+    first = false;
   }
-  if (current) {
-    if (pieces.length && countWords(current) < STREAM_MIN_WORDS) pieces[pieces.length - 1] += ` ${current}`;
-    else pieces.push(current);
-  }
-  return pieces.length ? pieces : [sentence.trim()];
+  return pieces;
 }
 
 // Whole (already-cleaned) utterance -> flat ordered list of pieces to stream.
@@ -317,7 +321,6 @@ async function loadEngine() {
 
   postMessage({ type: "status", status: "Loading voice model...", state: "loading" });
   const config = await fetchJson(hfUrl("config.json"));
-  speedPriors = config.speed_priors || {};
   voiceAliases = config.voice_aliases || {};
 
   const [modelBuffer, voicesBuffer] = await Promise.all([
@@ -365,7 +368,7 @@ function trimToSpeechCore(audio) {
 }
 
 // Synthesize one piece and return just its speech core (no surrounding silence).
-async function synthesizePieceCore(piece, voice, speedPrior) {
+async function synthesizePieceCore(piece, voice, speed) {
   const segments = await phonemize(piece, PHONEME_LANGUAGE);
   // eSpeak returns one string per clause (split on punctuation, which it drops). Rejoin
   // with ", " so the tokenizer sees the clause pauses — matching the reference Python's
@@ -374,11 +377,13 @@ async function synthesizePieceCore(piece, voice, speedPrior) {
   const tokens = phonemesToTokens(phonemeString);
   if (tokens.length <= 3) return null; // nothing but boundary tokens
 
+  // Style row is picked by the piece's own text length (the reference KittenTTS behavior);
+  // with clause-only splitting each piece is a whole clause, so this gives natural pacing.
   const style = pickStyle(voice, piece.length);
   const feeds = {
     input_ids: new ort.Tensor("int64", BigInt64Array.from(tokens, (t) => BigInt(t)), [1, tokens.length]),
     style: new ort.Tensor("float32", style, [1, style.length]),
-    speed: new ort.Tensor("float32", Float32Array.from([speedPrior]), [1]),
+    speed: new ort.Tensor("float32", Float32Array.from([speed]), [1]),
   };
   const outputs = await session.run(feeds);
   const waveform = outputs.waveform || outputs[session.outputNames[0]];
@@ -406,12 +411,11 @@ async function startGeneration(text, voiceKey) {
   try {
     const voice = voices[voiceKey];
     if (!voice) throw new Error(`Voice '${voiceKey}' is not available`);
-    const speedPrior = speedPriors[voiceKey] ?? 1;
     const pieces = splitIntoStreamPieces(preprocess(text));
 
     for (let i = 0; i < pieces.length; i++) {
       if (!isGenerating) break;
-      const core = await synthesizePieceCore(pieces[i], voice, speedPrior);
+      const core = await synthesizePieceCore(pieces[i], voice, SPEECH_SPEED);
       if (!isGenerating || !core || core.length === 0) continue;
 
       const chunk = buildChunk(core, i === 0, i === pieces.length - 1);
