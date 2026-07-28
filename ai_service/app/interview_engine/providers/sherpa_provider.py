@@ -19,6 +19,14 @@ from .kitten_tts_client import KittenTtsClient
 
 logger = logging.getLogger(__name__)
 
+# The TTS service streams a whole sentence's PCM to us faster than real time (one-shot synth), and the
+# browser buffers it and plays it back gaplessly — so the server finishes SENDING well before the
+# client finishes PLAYING. These let end_speak_turn() hold the agent-speaking window open until the
+# buffered audio would actually drain, so a barge-in during that trailing playback is still caught.
+_TTS_SAMPLE_RATE = 24000
+_CLIENT_START_CUSHION_S = 0.08   # matches AgentAudioPlayer's SCHEDULE_AHEAD_S (first-chunk lead)
+_DRAIN_MARGIN_S = 0.2            # small safety so we never flip to listening a hair before playout ends
+
 
 class SherpaOnnxProvider(SpeechProvider):
     """English interview provider backed by an external SherpaOnnx streaming ASR WebSocket server
@@ -63,10 +71,13 @@ class SherpaOnnxProvider(SpeechProvider):
         self._ws = None
         self._recv_task: asyncio.Task | None = None
 
-        # Server-side TTS: HTTP client to the KittenTTS microservice, plus a cancel flag that
+        # Server-side TTS: HTTP client to the TTS microservice, plus a cancel flag that
         # stop_speaking() sets so an in-flight sentence stream aborts promptly on barge-in.
         self._tts = KittenTtsClient()
         self._cancel_speak = asyncio.Event()
+        # Monotonic wall-clock time at which the audio streamed so far will have finished playing on
+        # the client (tracks the browser's own gapless scheduling). end_speak_turn() waits for it.
+        self._playback_end = 0.0
 
     # ------------------------------------------------------------------ STT (uplink) ---
 
@@ -136,21 +147,43 @@ class SherpaOnnxProvider(SpeechProvider):
         unblocks — on normal completion, on barge-in cancel, or on a synth error (which also
         propagates so the orchestrator can fall back to its retry nudge, mirroring the Azure path)."""
         self._cancel_speak.clear()
+        loop = asyncio.get_event_loop()
         try:
             async for chunk in self._tts.stream(text):
                 if self._cancel_speak.is_set():
                     break  # barge-in: stop forwarding; the flush below releases speak_sentence()
                 await self.events.put(AgentAudioChunkEvent(data=chunk, turn_id=turn_id))
+                # Advance the projected playback-end the same way the browser schedules chunks: if the
+                # queue has already drained, playback restarts after a small cushion; otherwise this
+                # chunk stacks onto the tail.
+                now = loop.time()
+                if self._playback_end < now:
+                    self._playback_end = now + _CLIENT_START_CUSHION_S
+                self._playback_end += (len(chunk) // 2) / _TTS_SAMPLE_RATE
         except Exception:  # noqa: BLE001 — surface synth/transport failure to the orchestrator
-            logger.exception("KittenTTS synthesis failed for turn_id=%s", turn_id)
+            logger.exception("TTS synthesis failed for turn_id=%s", turn_id)
             raise
         finally:
             await self.events.put(AgentSentenceFlushedEvent(turn_id=turn_id))
 
+    async def end_speak_turn(self) -> None:
+        # The sentence loop finished SENDING, but the client is likely still PLAYING buffered audio.
+        # Hold here (keeping the engine in AGENT_SPEAKING) until that audio would drain, so a late
+        # barge-in is still detected and stops playback. Wakes immediately on a barge-in, which sets
+        # _cancel_speak — without this the turn would flip to LISTENING mid-playout and interruptions
+        # over the tail (or over any short single-sentence reply) would be silently ignored.
+        remaining = self._playback_end - asyncio.get_event_loop().time() + _DRAIN_MARGIN_S
+        if remaining > 0:
+            try:
+                await asyncio.wait_for(self._cancel_speak.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                pass  # played all the way through with no interruption
+
     async def stop_speaking(self) -> None:
-        # Barge-in: signal the in-flight speak() loop to stop emitting audio. Perceived silence also
-        # comes from the pump no longer forwarding once turn_id advances (same as the Azure path).
+        # Barge-in: signal the in-flight speak()/end_speak_turn() to stop, and drop the projected
+        # playback tail — the client flushes its queue on agent_interrupted, so nothing is left playing.
         self._cancel_speak.set()
+        self._playback_end = 0.0
 
     # ---------------------------------------------------------------------- lifecycle ---
 

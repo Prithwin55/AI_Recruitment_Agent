@@ -158,10 +158,16 @@ class TurnTakingEngine:
 
     async def end_agent_turn(self) -> None:
         if self.state == TurnState.AGENT_SPEAKING:
-            self.state = TurnState.LISTENING
+            # Stay AGENT_SPEAKING while the provider waits for its already-sent audio to finish
+            # PLAYING on the client (server-side TTS sends faster than real time — see
+            # SherpaOnnxProvider.end_speak_turn). A barge-in during that playout is then still a
+            # genuine interruption: _confirm_interruption flips the state and wakes the wait, so the
+            # check below skips the normal end and we don't emit a stray speaking-end.
             await self._provider.end_speak_turn()
-            if self._cb.on_agent_speaking_end:
-                await self._cb.on_agent_speaking_end()
+            if self.state == TurnState.AGENT_SPEAKING:
+                self.state = TurnState.LISTENING
+                if self._cb.on_agent_speaking_end:
+                    await self._cb.on_agent_speaking_end()
 
     async def begin_thinking(self) -> None:
         self.state = TurnState.THINKING

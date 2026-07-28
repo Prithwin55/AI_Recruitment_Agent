@@ -199,11 +199,10 @@ class InterviewOrchestrator:
             self._tts_characters += len(sentence)
             ok = await self.engine.speak_sentence(sentence)
             # Even when interrupted mid-sentence, the sentence still belongs in what the agent
-            # "said": dropping it entirely (as opposed to just marking it cut off) would leave
-            # the next Claude turn with zero memory of what it had even started asking — just a
-            # bare "[cut off]" with no content — which defeats the system prompt's "respond
-            # naturally to what they actually said, don't try to awkwardly resume" instruction;
-            # Claude needs to know what "the old sentence" was to not awkwardly resume it.
+            # "said": committing it (marked "[cut off]") is exactly what lets the next Claude turn
+            # KEEP IN MIND the point it was making and continue it when appropriate — see the
+            # interruption guidance in build_system_prompt. Dropping it would leave a bare
+            # "[cut off]" with no content, so Claude couldn't pick the thread back up.
             delivered.append(sentence)
             self.transcript.record_agent_turn(sentence, self.engine.turn_id, cut_off=not ok)
             if not ok:
