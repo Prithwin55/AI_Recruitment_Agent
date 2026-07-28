@@ -15,6 +15,7 @@ frontend/.vite/
 .env
 backend/.env
 ai_service/.env
+tts_service/.env
 frontend/.env
 
 # Runtime data (local-only storage, per product requirement: no S3/MinIO for now)

@@ -1,0 +1,13 @@
+# Standalone TTS microservice — no `shared/` package, no DB, no Azure SDK. Kept minimal on purpose
+# so the image is small and starts fast (it's meant to be scaled to many replicas).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-dotenv>=1.0
+numpy>=1.26
+onnxruntime>=1.20
+# Pocket TTS engine (default): ONNX bundle pulled from the HF Space + SentencePiece tokenizer.
+huggingface_hub>=0.24
+sentencepiece>=0.2
+# KittenTTS engine (TTS_ENGINE=kitten): pulls its own tokenizer/phonemizer deps; espeak-ng is
+# installed as a system package in the Dockerfile.
+kittentts>=0.1.0

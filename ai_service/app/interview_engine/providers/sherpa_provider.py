@@ -1,13 +1,13 @@
 import asyncio
 import json
 import logging
-from typing import Awaitable, Callable
 
 import websockets
 from shared.config import get_settings
 
 from ..vad import TurnVad
 from .base import (
+    AgentAudioChunkEvent,
     AgentSentenceFlushedEvent,
     FinalTranscriptEvent,
     InterimTranscriptEvent,
@@ -15,20 +15,16 @@ from .base import (
     SpeechStartedEvent,
     UtteranceEndEvent,
 )
+from .kitten_tts_client import KittenTtsClient
 
 logger = logging.getLogger(__name__)
-
-# Upper bound on how long one sentence may take to synthesize + play on the CLIENT before we
-# stop waiting for its "done playing" ack (generous — the first sentence also triggers the
-# one-time in-browser TTS model download). Only a stuck-client safety net.
-_PLAYBACK_ACK_TIMEOUT_S = 120
 
 
 class SherpaOnnxProvider(SpeechProvider):
     """English interview provider backed by an external SherpaOnnx streaming ASR WebSocket server
-    for speech-to-text, plus a local server-side VAD for turn signals, plus the client-side TTS
-    bridge. It emits the exact same normalized events as the old Deepgram provider, so the
-    turn-taking engine is unchanged.
+    for speech-to-text, plus a local server-side VAD for turn signals, plus server-side TTS via the
+    standalone KittenTTS microservice. It emits the exact same normalized events as the old Deepgram
+    provider, so the turn-taking engine is unchanged.
 
     STT: raw 16 kHz / 16-bit mono PCM is streamed to the SherpaOnnx server; its JSON messages
     ({text, is_final, segment, ...}) become InterimTranscript / FinalTranscript events.
@@ -42,11 +38,13 @@ class SherpaOnnxProvider(SpeechProvider):
     empty speaker set and the engine's "multiple voices" integrity check is inactive on this
     path (it degrades cleanly — same as the Azure/Arabic path). See the module note in the PR.
 
-    TTS: unchanged from the Deepgram provider — speak() bridges each sentence to the browser
-    (Pocket TTS) via `on_speak_text` and blocks until the client acks it has finished playing.
+    TTS: server-side. speak() streams 24 kHz PCM from the KittenTTS microservice and emits
+    AgentAudioChunkEvents — the SAME event contract AzureProvider uses — so the gateway forwards
+    the audio to the browser over the interview WebSocket and the browser just plays it (no more
+    in-browser synthesis or per-sentence client ack). Barge-in cancels the in-flight stream.
     """
 
-    def __init__(self, on_speak_text: Callable[[str, int], Awaitable[None]] | None = None) -> None:
+    def __init__(self) -> None:
         super().__init__()
         settings = get_settings()
         scheme = "wss" if settings.sherpa_stt_use_wss else "ws"
@@ -65,10 +63,10 @@ class SherpaOnnxProvider(SpeechProvider):
         self._ws = None
         self._recv_task: asyncio.Task | None = None
 
-        # Client-TTS bridge (identical contract to the former DeepgramProvider).
-        self._on_speak_text = on_speak_text
-        self._speak_seq = 0
-        self._playback_acks: dict[int, asyncio.Event] = {}
+        # Server-side TTS: HTTP client to the KittenTTS microservice, plus a cancel flag that
+        # stop_speaking() sets so an in-flight sentence stream aborts promptly on barge-in.
+        self._tts = KittenTtsClient()
+        self._cancel_speak = asyncio.Event()
 
     # ------------------------------------------------------------------ STT (uplink) ---
 
@@ -129,34 +127,30 @@ class SherpaOnnxProvider(SpeechProvider):
             except Exception:  # noqa: BLE001 — a transient send failure must not kill the turn loop
                 pass
 
-    # -------------------------------------------------------------- TTS bridge (downlink) ---
+    # --------------------------------------------------------- TTS (server-side, downlink) ---
 
     async def speak(self, text: str, turn_id: int) -> None:
-        self._speak_seq += 1
-        seq = self._speak_seq
-        ack = asyncio.Event()
-        self._playback_acks[seq] = ack
+        """Stream one sentence of PCM from the KittenTTS service and emit it as AgentAudioChunkEvents
+        tagged with turn_id. The pump forwards chunks to the browser and drops any whose turn_id is
+        stale after a barge-in. Always ends with an AgentSentenceFlushedEvent so speak_sentence()
+        unblocks — on normal completion, on barge-in cancel, or on a synth error (which also
+        propagates so the orchestrator can fall back to its retry nudge, mirroring the Azure path)."""
+        self._cancel_speak.clear()
         try:
-            if self._on_speak_text is not None:
-                await self._on_speak_text(text, seq)
-            try:
-                await asyncio.wait_for(ack.wait(), timeout=_PLAYBACK_ACK_TIMEOUT_S)
-            except asyncio.TimeoutError:
-                logger.warning("Client TTS playback ack timed out for seq=%s (turn_id=%s)", seq, turn_id)
+            async for chunk in self._tts.stream(text):
+                if self._cancel_speak.is_set():
+                    break  # barge-in: stop forwarding; the flush below releases speak_sentence()
+                await self.events.put(AgentAudioChunkEvent(data=chunk, turn_id=turn_id))
+        except Exception:  # noqa: BLE001 — surface synth/transport failure to the orchestrator
+            logger.exception("KittenTTS synthesis failed for turn_id=%s", turn_id)
+            raise
         finally:
-            self._playback_acks.pop(seq, None)
             await self.events.put(AgentSentenceFlushedEvent(turn_id=turn_id))
 
-    def notify_playback_done(self, seq: int) -> None:
-        ack = self._playback_acks.get(seq)
-        if ack is not None:
-            ack.set()
-
     async def stop_speaking(self) -> None:
-        # Barge-in: unblock any in-flight speak() so speak_sentence() returns and the turn is
-        # superseded. The client is told to stop playback via the orchestrator's agent_interrupted.
-        for ack in list(self._playback_acks.values()):
-            ack.set()
+        # Barge-in: signal the in-flight speak() loop to stop emitting audio. Perceived silence also
+        # comes from the pump no longer forwarding once turn_id advances (same as the Azure path).
+        self._cancel_speak.set()
 
     # ---------------------------------------------------------------------- lifecycle ---
 
@@ -169,3 +163,4 @@ class SherpaOnnxProvider(SpeechProvider):
                 await self._ws.close()
             except Exception:  # noqa: BLE001
                 pass
+        await self._tts.aclose()

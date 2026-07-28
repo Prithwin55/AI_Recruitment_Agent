@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     vad_onset_ms: int = 150
     # (End-of-turn silence reuses interview_end_of_turn_silence_ms below — the same pause-tolerance knob.)
 
+    # --- TTS (English — standalone server-side microservice) ---
+    # English agent speech is synthesized by the separate tts_service and streamed to the browser
+    # over the interview WebSocket (see SherpaOnnxProvider). In compose this points at the internal
+    # service DNS name (http://tts_service:8200), which round-robins across replicas. The voice must
+    # match the service's engine (default Pocket TTS -> cosette; Kitten -> expr-voice-*).
+    tts_service_url: str = "http://localhost:8200"
+    tts_voice: str = "cosette"
+
     # --- Azure Speech (Arabic-Omani STT/TTS) ---
     azure_speech_key: str = ""
     azure_speech_region: str = ""

@@ -29,6 +29,7 @@ services:
     environment:
       - RELOAD=0                      # single worker (in-process interview state) — NEVER scale
       - STORAGE_DIR=/app/storage      # SAME absolute path as backend -> one shared DB
+      - TTS_SERVICE_URL=http://tts_service:8200   # English TTS microservice (DNS round-robins replicas)
     volumes:
       - storage:/app/storage          # SAME volume as backend
     restart: unless-stopped
@@ -36,6 +37,23 @@ services:
       - "8100"
     depends_on:
       - backend
+      - tts_service
+
+  # Standalone English TTS. Default engine Pocket TTS (natural, ~real-time on CPU); TTS_ENGINE=kitten
+  # for the tiny fast model — set in tts_service/.env. STATELESS and horizontally scalable — unlike
+  # ai_service it is safe (and intended) to run multiple replicas: `docker compose up -d --scale
+  # tts_service=N`. Docker's embedded DNS round-robins `tts_service` across them, so ai_service needs
+  # no change to scale out. Per-container concurrency is bounded IN-APP (TTS_MAX_CONCURRENCY).
+  tts_service:
+    build:
+      context: .
+      dockerfile: tts_service/Dockerfile
+    env_file: ./tts_service/.env      # its own config — voice + concurrency knobs (see .env.example)
+    environment:
+      - RELOAD=0                      # one uvicorn worker per container; scale by replicas, not workers
+    restart: unless-stopped
+    expose:
+      - "8200"
 
   web:
     build:
